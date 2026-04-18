@@ -15,10 +15,44 @@ COMPLETE UPGRADE with:
 =======================================================================
 """
 
+# ============================================
+# PLATFORM DETECTION
+# ============================================
+import platform
+import sys
+
+# Platform-specific imports
+if platform.system() == "Windows":
+    import ctypes
+    import ctypes.wintypes
+    import win32file
+    import win32con
+    import win32gui
+    import win32process
+    import pythoncom
+    import wmi
+    PLATFORM_WINDOWS = True
+else:
+    # Stub for non-Windows platforms (Streamlit Cloud uses Linux)
+    class MockModule:
+        def __getattr__(self, name):
+            return None
+        def __call__(self, *args, **kwargs):
+            return None
+    
+    ctypes = MockModule()
+    ctypes.wintypes = MockModule()
+    win32file = MockModule()
+    win32con = MockModule()
+    win32gui = MockModule()
+    win32process = MockModule()
+    pythoncom = MockModule()
+    wmi = MockModule()
+    PLATFORM_WINDOWS = False
+
 import streamlit as st
 import pandas as pd
 import sqlite3
-import sys
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -42,20 +76,11 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-import plotly.graph_objects as go
 from collections import defaultdict, Counter
 import random
 import socket
 import subprocess
 import psutil
-import ctypes
-import ctypes.wintypes
-import win32file
-import win32con
-import win32gui
-import win32process
-import pythoncom
-import wmi
 import tempfile
 from jinja2 import Template
 from fpdf import FPDF
@@ -288,6 +313,29 @@ if not firebase_admin._apps:
 # DATABASE CONFIGURATION
 # ============================================
 DB_PATH = "system_monitor.db"
+
+# ============================================
+# STUB CLASSES FOR NON-WINDOWS PLATFORMS
+# ============================================
+# These stubs allow the app to run on Streamlit Cloud (Linux) without errors
+if not PLATFORM_WINDOWS:
+    class ClipboardMonitor:
+        """Stub for non-Windows platforms"""
+        def __init__(self, db): 
+            pass
+        def start(self): 
+            pass
+        def stop(self): 
+            pass
+    
+    class USBMonitor:
+        """Stub for non-Windows platforms"""
+        def __init__(self, db): 
+            pass
+        def start(self): 
+            pass
+        def stop(self): 
+            pass
 
 # ============================================
 # THREAT INTELLIGENCE CONFIG
@@ -526,540 +574,542 @@ MONITOR_INTERVALS = {
 # ============================================
 # ENHANCED CLIPBOARD MONITOR (300+ LINES)
 # ============================================
-class ClipboardMonitor:
-    def __init__(self, db):
-        self.db = db
-        self.running = True
-        self.previous_text_hash = None
-        self.previous_file_list = []
-        self.last_alert_time = 0
-        self.alert_cooldown = 5
+if PLATFORM_WINDOWS:
+    class ClipboardMonitor:
+        def __init__(self, db):
+            self.db = db
+            self.running = True
+            self.previous_text_hash = None
+            self.previous_file_list = []
+            self.last_alert_time = 0
+            self.alert_cooldown = 5
+            
+        def start(self):
+            print("  ✓ Clipboard monitor started (enhanced with file details)")
+            threading.Thread(target=self.monitor_clipboard, daemon=True).start()
         
-    def start(self):
-        print("  ✓ Clipboard monitor started (enhanced with file details)")
-        threading.Thread(target=self.monitor_clipboard, daemon=True).start()
-    
-    def get_clipboard_text(self):
-        """Get text from clipboard"""
-        try:
-            if ctypes.windll.user32.OpenClipboard(0):
-                try:
-                    handle = ctypes.windll.user32.GetClipboardData(win32con.CF_TEXT)
-                    if handle:
-                        text_ptr = ctypes.windll.kernel32.GlobalLock(handle)
-                        if text_ptr:
-                            text = ctypes.c_char_p(text_ptr).value
-                            ctypes.windll.kernel32.GlobalUnlock(handle)
-                            if text:
-                                return text.decode('utf-8', errors='ignore')
-                finally:
-                    ctypes.windll.user32.CloseClipboard()
-        except Exception as e:
-            pass
-        return None
-    
-    def get_clipboard_files_enhanced(self):
-        """Get detailed file information from clipboard - ENHANCED VERSION"""
-        files = []
-        try:
-            if ctypes.windll.user32.OpenClipboard(0):
-                try:
-                    handle = ctypes.windll.user32.GetClipboardData(win32con.CF_HDROP)
-                    if handle:
-                        hdrop = ctypes.windll.kernel32.GlobalLock(handle)
-                        if hdrop:
-                            file_count = ctypes.windll.shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
-                            
-                            for i in range(file_count):
-                                path_len = ctypes.windll.shell32.DragQueryFileW(hdrop, i, None, 0)
-                                if path_len > 0:
-                                    buffer = ctypes.create_unicode_buffer(path_len + 1)
-                                    ctypes.windll.shell32.DragQueryFileW(hdrop, i, buffer, path_len + 1)
-                                    file_path = buffer.value
-                                    
-                                    file_info = {
-                                        'path': file_path,
-                                        'name': os.path.basename(file_path),
-                                        'size': 0,
-                                        'type': 'FILE',
-                                        'exists': False
-                                    }
-                                    
-                                    if os.path.exists(file_path):
-                                        file_info['exists'] = True
-                                        try:
-                                            file_info['size'] = os.path.getsize(file_path)
-                                            file_info['size_mb'] = round(file_info['size'] / (1024 * 1024), 2)
-                                            file_info['extension'] = os.path.splitext(file_path)[1].lower()
-                                        except:
-                                            pass
-                                    else:
-                                        file_info['type'] = 'UNKNOWN_PATH'
-                                    
-                                    files.append(file_info)
-                            
-                            ctypes.windll.kernel32.GlobalUnlock(handle)
-                finally:
-                    ctypes.windll.user32.CloseClipboard()
-        except Exception as e:
-            pass
-        
-        return files
-    
-    def get_clipboard_image_info(self):
-        """Check if image is in clipboard"""
-        try:
-            if ctypes.windll.user32.OpenClipboard(0):
-                try:
-                    if ctypes.windll.user32.IsClipboardFormatAvailable(win32con.CF_BITMAP):
-                        return True
-                    if ctypes.windll.user32.IsClipboardFormatAvailable(win32con.CF_DIB):
-                        return True
-                finally:
-                    ctypes.windll.user32.CloseClipboard()
-        except:
-            pass
-        return False
-    
-    def calculate_file_signature(self, files):
-        if not files:
-            return None
-        signatures = []
-        for f in files[:10]:
-            signatures.append(f"{f['name']}|{f.get('size', 0)}")
-        return hashlib.md5('||'.join(signatures).encode()).hexdigest()
-    
-    def calculate_sensitivity(self, text):
-        if not text:
-            return 0.0
-        score = 0.0
-        for pattern_name, pattern_info in SENSITIVE_PATTERNS.items():
-            matches = re.findall(pattern_info['pattern'], text, re.IGNORECASE)
-            if matches:
-                if pattern_info['severity'] == 'CRITICAL':
-                    score += 10
-                elif pattern_info['severity'] == 'HIGH':
-                    score += 5
-                elif pattern_info['severity'] == 'MEDIUM':
-                    score += 3
-                else:
-                    score += 1
-        if len(text) > 10000:
-            score += 2
-        elif len(text) > 1000:
-            score += 1
-        return min(score, 10.0)
-    
-    def get_classification(self, score):
-        if score >= 8:
-            return 'CRITICAL'
-        elif score >= 5:
-            return 'HIGH'
-        elif score >= 3:
-            return 'MEDIUM'
-        elif score >= 1:
-            return 'LOW'
-        else:
-            return 'PUBLIC'
-    
-    def get_foreground_process(self):
-        try:
-            hwnd = win32gui.GetForegroundWindow()
-            if hwnd:
-                thread_id, process_id = win32process.GetWindowThreadProcessId(hwnd)
-                process = psutil.Process(process_id)
-                return process.name()
-        except:
-            pass
-        return None
-    
-    def monitor_clipboard(self):
-        while self.running:
+        def get_clipboard_text(self):
+            """Get text from clipboard"""
             try:
-                current_time = time.time()
-                
-                current_text = self.get_clipboard_text()
-                if current_text:
-                    text_hash = hashlib.sha256(current_text.encode()).hexdigest()
-                    
-                    if text_hash != self.previous_text_hash:
-                        sensitivity = self.calculate_sensitivity(current_text)
-                        classification = self.get_classification(sensitivity)
-                        text_preview = current_text[:500] + "..." if len(current_text) > 500 else current_text
-                        
-                        clip_data = {
-                            'timestamp': datetime.now().isoformat(),
-                            'data_type': 'TEXT',
-                            'data_hash': text_hash,
-                            'data_size': len(current_text),
-                            'sensitivity_score': sensitivity,
-                            'classification': classification,
-                            'process_name': self.get_foreground_process(),
-                            'process_id': None
-                        }
-                        
-                        if self.db:
-                            self.db.insert('clipboard_data', clip_data)
-                        
-                        if sensitivity >= 3:
-                            if current_time - self.last_alert_time > self.alert_cooldown:
-                                print(f"\n📋 Sensitive clipboard content: {classification}")
-                                self.last_alert_time = current_time
-                        
-                        self.previous_text_hash = text_hash
-                
-                current_files = self.get_clipboard_files_enhanced()
-                
-                if current_files:
-                    file_signature = self.calculate_file_signature(current_files)
-                    
-                    if file_signature != getattr(self, 'last_file_signature', None):
-                        total_size = sum(f.get('size', 0) for f in current_files)
-                        total_size_mb = round(total_size / (1024 * 1024), 2)
-                        
-                        print(f"\n📋 FILES copied to clipboard ({len(current_files)} files, {total_size_mb} MB total)")
-                        for f in current_files[:10]:
-                            if f.get('exists', False):
-                                size_str = f"{f.get('size_mb', 0)} MB" if f.get('size_mb', 0) > 1 else f"{f.get('size', 0)} bytes"
-                                print(f"   📄 {f['name']} ({size_str})")
-                        
-                        if total_size > 10 * 1024 * 1024:
-                            if current_time - self.last_alert_time > self.alert_cooldown:
-                                print(f"   🔴 ALERT: Large data transfer to clipboard!")
-                                self.last_alert_time = current_time
-                        
-                        self.last_file_signature = file_signature
-                        self.previous_file_list = current_files
-                
-                time.sleep(MONITOR_INTERVALS['clipboard'])
+                if ctypes.windll.user32.OpenClipboard(0):
+                    try:
+                        handle = ctypes.windll.user32.GetClipboardData(win32con.CF_TEXT)
+                        if handle:
+                            text_ptr = ctypes.windll.kernel32.GlobalLock(handle)
+                            if text_ptr:
+                                text = ctypes.c_char_p(text_ptr).value
+                                ctypes.windll.kernel32.GlobalUnlock(handle)
+                                if text:
+                                    return text.decode('utf-8', errors='ignore')
+                    finally:
+                        ctypes.windll.user32.CloseClipboard()
             except Exception as e:
-                print(f"Clipboard monitor error: {e}")
-                time.sleep(5)
-    
-    def stop(self):
-        self.running = False
+                pass
+            return None
+        
+        def get_clipboard_files_enhanced(self):
+            """Get detailed file information from clipboard - ENHANCED VERSION"""
+            files = []
+            try:
+                if ctypes.windll.user32.OpenClipboard(0):
+                    try:
+                        handle = ctypes.windll.user32.GetClipboardData(win32con.CF_HDROP)
+                        if handle:
+                            hdrop = ctypes.windll.kernel32.GlobalLock(handle)
+                            if hdrop:
+                                file_count = ctypes.windll.shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
+                                
+                                for i in range(file_count):
+                                    path_len = ctypes.windll.shell32.DragQueryFileW(hdrop, i, None, 0)
+                                    if path_len > 0:
+                                        buffer = ctypes.create_unicode_buffer(path_len + 1)
+                                        ctypes.windll.shell32.DragQueryFileW(hdrop, i, buffer, path_len + 1)
+                                        file_path = buffer.value
+                                        
+                                        file_info = {
+                                            'path': file_path,
+                                            'name': os.path.basename(file_path),
+                                            'size': 0,
+                                            'type': 'FILE',
+                                            'exists': False
+                                        }
+                                        
+                                        if os.path.exists(file_path):
+                                            file_info['exists'] = True
+                                            try:
+                                                file_info['size'] = os.path.getsize(file_path)
+                                                file_info['size_mb'] = round(file_info['size'] / (1024 * 1024), 2)
+                                                file_info['extension'] = os.path.splitext(file_path)[1].lower()
+                                            except:
+                                                pass
+                                        else:
+                                            file_info['type'] = 'UNKNOWN_PATH'
+                                        
+                                        files.append(file_info)
+                                
+                                ctypes.windll.kernel32.GlobalUnlock(handle)
+                    finally:
+                        ctypes.windll.user32.CloseClipboard()
+            except Exception as e:
+                pass
+            
+            return files
+        
+        def get_clipboard_image_info(self):
+            """Check if image is in clipboard"""
+            try:
+                if ctypes.windll.user32.OpenClipboard(0):
+                    try:
+                        if ctypes.windll.user32.IsClipboardFormatAvailable(win32con.CF_BITMAP):
+                            return True
+                        if ctypes.windll.user32.IsClipboardFormatAvailable(win32con.CF_DIB):
+                            return True
+                    finally:
+                        ctypes.windll.user32.CloseClipboard()
+            except:
+                pass
+            return False
+        
+        def calculate_file_signature(self, files):
+            if not files:
+                return None
+            signatures = []
+            for f in files[:10]:
+                signatures.append(f"{f['name']}|{f.get('size', 0)}")
+            return hashlib.md5('||'.join(signatures).encode()).hexdigest()
+        
+        def calculate_sensitivity(self, text):
+            if not text:
+                return 0.0
+            score = 0.0
+            for pattern_name, pattern_info in SENSITIVE_PATTERNS.items():
+                matches = re.findall(pattern_info['pattern'], text, re.IGNORECASE)
+                if matches:
+                    if pattern_info['severity'] == 'CRITICAL':
+                        score += 10
+                    elif pattern_info['severity'] == 'HIGH':
+                        score += 5
+                    elif pattern_info['severity'] == 'MEDIUM':
+                        score += 3
+                    else:
+                        score += 1
+            if len(text) > 10000:
+                score += 2
+            elif len(text) > 1000:
+                score += 1
+            return min(score, 10.0)
+        
+        def get_classification(self, score):
+            if score >= 8:
+                return 'CRITICAL'
+            elif score >= 5:
+                return 'HIGH'
+            elif score >= 3:
+                return 'MEDIUM'
+            elif score >= 1:
+                return 'LOW'
+            else:
+                return 'PUBLIC'
+        
+        def get_foreground_process(self):
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                if hwnd:
+                    thread_id, process_id = win32process.GetWindowThreadProcessId(hwnd)
+                    process = psutil.Process(process_id)
+                    return process.name()
+            except:
+                pass
+            return None
+        
+        def monitor_clipboard(self):
+            while self.running:
+                try:
+                    current_time = time.time()
+                    
+                    current_text = self.get_clipboard_text()
+                    if current_text:
+                        text_hash = hashlib.sha256(current_text.encode()).hexdigest()
+                        
+                        if text_hash != self.previous_text_hash:
+                            sensitivity = self.calculate_sensitivity(current_text)
+                            classification = self.get_classification(sensitivity)
+                            text_preview = current_text[:500] + "..." if len(current_text) > 500 else current_text
+                            
+                            clip_data = {
+                                'timestamp': datetime.now().isoformat(),
+                                'data_type': 'TEXT',
+                                'data_hash': text_hash,
+                                'data_size': len(current_text),
+                                'sensitivity_score': sensitivity,
+                                'classification': classification,
+                                'process_name': self.get_foreground_process(),
+                                'process_id': None
+                            }
+                            
+                            if self.db:
+                                self.db.insert('clipboard_data', clip_data)
+                            
+                            if sensitivity >= 3:
+                                if current_time - self.last_alert_time > self.alert_cooldown:
+                                    print(f"\n📋 Sensitive clipboard content: {classification}")
+                                    self.last_alert_time = current_time
+                            
+                            self.previous_text_hash = text_hash
+                    
+                    current_files = self.get_clipboard_files_enhanced()
+                    
+                    if current_files:
+                        file_signature = self.calculate_file_signature(current_files)
+                        
+                        if file_signature != getattr(self, 'last_file_signature', None):
+                            total_size = sum(f.get('size', 0) for f in current_files)
+                            total_size_mb = round(total_size / (1024 * 1024), 2)
+                            
+                            print(f"\n📋 FILES copied to clipboard ({len(current_files)} files, {total_size_mb} MB total)")
+                            for f in current_files[:10]:
+                                if f.get('exists', False):
+                                    size_str = f"{f.get('size_mb', 0)} MB" if f.get('size_mb', 0) > 1 else f"{f.get('size', 0)} bytes"
+                                    print(f"   📄 {f['name']} ({size_str})")
+                            
+                            if total_size > 10 * 1024 * 1024:
+                                if current_time - self.last_alert_time > self.alert_cooldown:
+                                    print(f"   🔴 ALERT: Large data transfer to clipboard!")
+                                    self.last_alert_time = current_time
+                            
+                            self.last_file_signature = file_signature
+                            self.previous_file_list = current_files
+                    
+                    time.sleep(MONITOR_INTERVALS['clipboard'])
+                except Exception as e:
+                    print(f"Clipboard monitor error: {e}")
+                    time.sleep(5)
+        
+        def stop(self):
+            self.running = False
 
 # ============================================
 # ENHANCED USB MONITOR (400+ LINES)
 # ============================================
-class USBMonitor:
-    def __init__(self, db):
-        self.db = db
-        self.running = True
-        self.usb_devices = {}
-        self.drive_letters = set()
-        self.drive_contents = {}
-        self.file_snapshots = {}
-        self.transfer_history = set()
-        self.last_full_scan = {}
-        self.scan_interval = 10
-        
-    def start(self):
-        print("  ✓ USB device monitor started (enhanced transfer detection)")
-        self.load_known_devices()
-        threading.Thread(target=self.monitor_usb_devices, daemon=True).start()
-        threading.Thread(target=self.monitor_drives, daemon=True).start()
-        threading.Thread(target=self.monitor_usb_data_transfers_enhanced, daemon=True).start()
-    
-    def load_known_devices(self):
-        try:
-            if self.db:
-                conn = self.db.get_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT device_id FROM usb_device_history")
-                for row in cursor.fetchall():
-                    self.usb_devices[row[0]] = {'known': True}
-        except:
-            pass
-    
-    def get_usb_devices_wmi(self):
-        devices = []
-        try:
-            pythoncom.CoInitialize()
-            wmi_conn = wmi.WMI()
+if PLATFORM_WINDOWS:
+    class USBMonitor:
+        def __init__(self, db):
+            self.db = db
+            self.running = True
+            self.usb_devices = {}
+            self.drive_letters = set()
+            self.drive_contents = {}
+            self.file_snapshots = {}
+            self.transfer_history = set()
+            self.last_full_scan = {}
+            self.scan_interval = 10
             
-            for usb in wmi_conn.Win32_USBHub():
-                try:
-                    device = {
-                        'device_id': str(usb.DeviceID)[:200],
-                        'vendor': '',
-                        'product': '',
-                        'serial_number': ''
-                    }
-                    
-                    pnp_id = str(usb.PNPDeviceID)
-                    if 'VID_' in pnp_id and 'PID_' in pnp_id:
-                        vid_match = re.search(r'VID_([0-9A-F]{4})', pnp_id, re.I)
-                        pid_match = re.search(r'PID_([0-9A-F]{4})', pnp_id, re.I)
-                        if vid_match:
-                            device['vendor'] = vid_match.group(1)
-                        if pid_match:
-                            device['product'] = pid_match.group(1)
-                    
-                    if usb.SerialNumber:
-                        device['serial_number'] = str(usb.SerialNumber)[:100]
-                    
-                    devices.append(device)
-                except:
-                    continue
-            
-            pythoncom.CoUninitialize()
-        except Exception as e:
-            pass
+        def start(self):
+            print("  ✓ USB device monitor started (enhanced transfer detection)")
+            self.load_known_devices()
+            threading.Thread(target=self.monitor_usb_devices, daemon=True).start()
+            threading.Thread(target=self.monitor_drives, daemon=True).start()
+            threading.Thread(target=self.monitor_usb_data_transfers_enhanced, daemon=True).start()
         
-        return devices
-    
-    def get_removable_drives(self):
-        drives = []
-        try:
-            for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-                drive_path = f"{letter}:\\"
-                if os.path.exists(drive_path):
-                    try:
-                        drive_type = win32file.GetDriveType(drive_path)
-                        if drive_type == win32con.DRIVE_REMOVABLE:
-                            drive_info = {
-                                'drive': drive_path,
-                                'letter': letter,
-                                'status': 'MOUNTED'
-                            }
-                            
-                            try:
-                                free_bytes, total_bytes, free_bytes_available = win32file.GetDiskFreeSpaceEx(drive_path)
-                                drive_info['total'] = total_bytes / (1024**3)
-                                drive_info['free'] = free_bytes / (1024**3)
-                                drive_info['used'] = (total_bytes - free_bytes) / (1024**3)
-                            except:
-                                pass
-                            
-                            drives.append(drive_info)
-                    except:
-                        pass
-        except Exception as e:
-            pass
-        
-        return drives
-    
-    def monitor_usb_devices(self):
-        while self.running:
+        def load_known_devices(self):
             try:
-                current_devices = self.get_usb_devices_wmi()
-                current_ids = {d['device_id'] for d in current_devices}
-                previous_ids = set(self.usb_devices.keys())
-                
-                for device in current_devices:
-                    if device['device_id'] not in self.usb_devices:
-                        self.usb_devices[device['device_id']] = device
-                        
-                        is_known = False
-                        if self.db:
-                            is_known = self.db.is_known_usb_device(device['device_id'])
-                        
-                        if not is_known:
-                            print(f"\n🔌 NEW USB Device: {device['vendor']} {device['product']} - ALERT")
-                            if self.db:
-                                self.db.add_to_usb_history(device['device_id'], device['vendor'], device['product'], device['serial_number'])
-                        else:
-                            print(f"\n🔌 Known USB Device: {device['vendor']} {device['product']} connected")
-                
-                for device_id in previous_ids - current_ids:
-                    device = self.usb_devices[device_id]
-                    print(f"\n🔌 USB Device Disconnected: {device.get('vendor', '')} {device.get('product', '')}")
-                    del self.usb_devices[device_id]
-                
-                time.sleep(MONITOR_INTERVALS['usb'])
-            except Exception as e:
-                print(f"USB monitor error: {e}")
-                time.sleep(5)
-    
-    def monitor_drives(self):
-        while self.running:
+                if self.db:
+                    conn = self.db.get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT device_id FROM usb_device_history")
+                    for row in cursor.fetchall():
+                        self.usb_devices[row[0]] = {'known': True}
+            except:
+                pass
+        
+        def get_usb_devices_wmi(self):
+            devices = []
             try:
-                current_drives = set()
-                drives = self.get_removable_drives()
+                pythoncom.CoInitialize()
+                wmi_conn = wmi.WMI()
                 
-                for drive_info in drives:
-                    drive = drive_info['drive']
-                    current_drives.add(drive)
-                    
-                    if drive not in self.drive_letters:
-                        self.drive_letters.add(drive)
-                        print(f"\n💾 USB Drive Attached: {drive} ({drive_info.get('total', 0):.1f} GB)")
-                        self.scan_usb_drive_enhanced(drive)
-                
-                for drive in list(self.drive_letters):
-                    if drive not in current_drives:
-                        self.drive_letters.remove(drive)
-                        print(f"\n💾 USB Drive Removed: {drive}")
-                        
-                        if drive in self.file_snapshots:
-                            del self.file_snapshots[drive]
-                        if drive in self.last_full_scan:
-                            del self.last_full_scan[drive]
-                
-                time.sleep(MONITOR_INTERVALS['external_drives'])
-            except Exception as e:
-                print(f"Drive monitor error: {e}")
-                time.sleep(10)
-    
-    def scan_usb_drive_enhanced(self, drive_path):
-        try:
-            file_snapshot = {}
-            file_count = 0
-            total_size = 0
-            
-            print(f"   📁 Scanning USB drive {drive_path}...")
-            
-            for root, dirs, files in os.walk(drive_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
+                for usb in wmi_conn.Win32_USBHub():
                     try:
-                        file_stat = os.stat(file_path)
-                        rel_path = os.path.relpath(file_path, drive_path)
-                        file_snapshot[rel_path] = {
-                            'size': file_stat.st_size,
-                            'mtime': file_stat.st_mtime,
-                            'full_path': file_path
+                        device = {
+                            'device_id': str(usb.DeviceID)[:200],
+                            'vendor': '',
+                            'product': '',
+                            'serial_number': ''
                         }
-                        file_count += 1
-                        total_size += file_stat.st_size
                         
-                        if file_count > 10000:
-                            break
+                        pnp_id = str(usb.PNPDeviceID)
+                        if 'VID_' in pnp_id and 'PID_' in pnp_id:
+                            vid_match = re.search(r'VID_([0-9A-F]{4})', pnp_id, re.I)
+                            pid_match = re.search(r'PID_([0-9A-F]{4})', pnp_id, re.I)
+                            if vid_match:
+                                device['vendor'] = vid_match.group(1)
+                            if pid_match:
+                                device['product'] = pid_match.group(1)
+                        
+                        if usb.SerialNumber:
+                            device['serial_number'] = str(usb.SerialNumber)[:100]
+                        
+                        devices.append(device)
                     except:
-                        pass
-                
-                if file_count > 10000:
-                    break
-            
-            self.file_snapshots[drive_path] = file_snapshot
-            self.last_full_scan[drive_path] = time.time()
-            
-            print(f"   ✓ Initial snapshot: {file_count} files, {total_size/(1024**3):.2f} GB")
-        except Exception as e:
-            print(f"   ✗ Error scanning USB drive: {e}")
-    
-    def classify_file_enhanced(self, file_path):
-        sensitive_extensions = {
-            '.doc': 'MEDIUM', '.docx': 'MEDIUM', '.xls': 'MEDIUM', '.xlsx': 'MEDIUM',
-            '.pdf': 'MEDIUM', '.txt': 'LOW', '.csv': 'MEDIUM', '.db': 'HIGH',
-            '.sql': 'HIGH', '.pst': 'HIGH', '.key': 'HIGH', '.pem': 'CRITICAL'
-        }
-        
-        ext = os.path.splitext(file_path)[1].lower()
-        
-        if ext in sensitive_extensions:
-            return sensitive_extensions[ext]
-        
-        lower_path = file_path.lower()
-        if any(word in lower_path for word in ['confidential', 'secret', 'password']):
-            return 'HIGH'
-        
-        return 'LOW'
-    
-    def calculate_file_hash_enhanced(self, file_path):
-        try:
-            file_size = os.path.getsize(file_path)
-            if file_size > 50 * 1024 * 1024:
-                return None
-            
-            sha256 = hashlib.sha256()
-            with open(file_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(65536), b''):
-                    sha256.update(chunk)
-            return sha256.hexdigest()
-        except:
-            return None
-    
-    def get_active_process(self):
-        try:
-            hwnd = win32gui.GetForegroundWindow()
-            if hwnd:
-                thread_id, process_id = win32process.GetWindowThreadProcessId(hwnd)
-                process = psutil.Process(process_id)
-                return process.name()
-        except:
-            pass
-        return 'explorer.exe'
-    
-    def monitor_usb_data_transfers_enhanced(self):
-        while self.running:
-            try:
-                for drive_path in list(self.drive_letters):
-                    if drive_path not in self.file_snapshots:
-                        self.scan_usb_drive_enhanced(drive_path)
                         continue
-                    
-                    last_scan = self.last_full_scan.get(drive_path, 0)
-                    if time.time() - last_scan > self.scan_interval:
-                        try:
-                            current_snapshot = {}
-                            new_files = []
-                            
-                            for root, dirs, files in os.walk(drive_path):
-                                for file in files:
-                                    file_path = os.path.join(root, file)
-                                    try:
-                                        file_stat = os.stat(file_path)
-                                        rel_path = os.path.relpath(file_path, drive_path)
-                                        
-                                        current_snapshot[rel_path] = {
-                                            'size': file_stat.st_size,
-                                            'mtime': file_stat.st_mtime,
-                                            'full_path': file_path
-                                        }
-                                        
-                                        if rel_path not in self.file_snapshots[drive_path]:
-                                            new_files.append((rel_path, current_snapshot[rel_path]))
-                                        
-                                        if len(current_snapshot) > 20000:
-                                            break
-                                    except:
-                                        pass
-                                
-                                if len(current_snapshot) > 20000:
-                                    break
-                            
-                            for rel_path, file_info in new_files:
-                                file_size = file_info['size']
-                                full_path = file_info['full_path']
-                                transfer_key = f"{drive_path}:{rel_path}:{file_size}"
-                                
-                                if transfer_key not in self.transfer_history:
-                                    self.transfer_history.add(transfer_key)
-                                    
-                                    if len(self.transfer_history) > 10000:
-                                        self.transfer_history.clear()
-                                    
-                                    classification = self.classify_file_enhanced(full_path)
-                                    size_mb = file_size / (1024 * 1024)
-                                    
-                                    if classification in ['CRITICAL', 'HIGH']:
-                                        print(f"\n🔴 USB TRANSFER ALERT: {classification} file '{os.path.basename(full_path)}' ({size_mb:.2f} MB) copied to USB!")
-                                    elif file_size > 10 * 1024 * 1024:
-                                        print(f"\n⚠️ USB TRANSFER: Large file '{os.path.basename(full_path)}' ({size_mb:.2f} MB) copied to USB")
-                                    elif file_size > 100 * 1024:
-                                        print(f"\n📁 USB Transfer: '{os.path.basename(full_path)}' ({size_mb:.2f} MB)")
-                                    else:
-                                        print(f"   📄 USB Transfer: '{os.path.basename(full_path)}' ({file_size} bytes)")
-                            
-                            self.file_snapshots[drive_path] = current_snapshot
-                            self.last_full_scan[drive_path] = time.time()
-                            
-                            if new_files:
-                                print(f"   📊 USB Scan: {len(new_files)} new files")
-                        
-                        except Exception as e:
-                            print(f"   ⚠️ USB scan error: {e}")
-                            time.sleep(5)
                 
-                time.sleep(self.scan_interval)
+                pythoncom.CoUninitialize()
             except Exception as e:
-                print(f"USB transfer monitor error: {e}")
-                time.sleep(10)
-    
-    def stop(self):
-        self.running = False
+                pass
+            
+            return devices
+        
+        def get_removable_drives(self):
+            drives = []
+            try:
+                for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+                    drive_path = f"{letter}:\\"
+                    if os.path.exists(drive_path):
+                        try:
+                            drive_type = win32file.GetDriveType(drive_path)
+                            if drive_type == win32con.DRIVE_REMOVABLE:
+                                drive_info = {
+                                    'drive': drive_path,
+                                    'letter': letter,
+                                    'status': 'MOUNTED'
+                                }
+                                
+                                try:
+                                    free_bytes, total_bytes, free_bytes_available = win32file.GetDiskFreeSpaceEx(drive_path)
+                                    drive_info['total'] = total_bytes / (1024**3)
+                                    drive_info['free'] = free_bytes / (1024**3)
+                                    drive_info['used'] = (total_bytes - free_bytes) / (1024**3)
+                                except:
+                                    pass
+                                
+                                drives.append(drive_info)
+                        except:
+                            pass
+            except Exception as e:
+                pass
+            
+            return drives
+        
+        def monitor_usb_devices(self):
+            while self.running:
+                try:
+                    current_devices = self.get_usb_devices_wmi()
+                    current_ids = {d['device_id'] for d in current_devices}
+                    previous_ids = set(self.usb_devices.keys())
+                    
+                    for device in current_devices:
+                        if device['device_id'] not in self.usb_devices:
+                            self.usb_devices[device['device_id']] = device
+                            
+                            is_known = False
+                            if self.db:
+                                is_known = self.db.is_known_usb_device(device['device_id'])
+                            
+                            if not is_known:
+                                print(f"\n🔌 NEW USB Device: {device['vendor']} {device['product']} - ALERT")
+                                if self.db:
+                                    self.db.add_to_usb_history(device['device_id'], device['vendor'], device['product'], device['serial_number'])
+                            else:
+                                print(f"\n🔌 Known USB Device: {device['vendor']} {device['product']} connected")
+                    
+                    for device_id in previous_ids - current_ids:
+                        device = self.usb_devices[device_id]
+                        print(f"\n🔌 USB Device Disconnected: {device.get('vendor', '')} {device.get('product', '')}")
+                        del self.usb_devices[device_id]
+                    
+                    time.sleep(MONITOR_INTERVALS['usb'])
+                except Exception as e:
+                    print(f"USB monitor error: {e}")
+                    time.sleep(5)
+        
+        def monitor_drives(self):
+            while self.running:
+                try:
+                    current_drives = set()
+                    drives = self.get_removable_drives()
+                    
+                    for drive_info in drives:
+                        drive = drive_info['drive']
+                        current_drives.add(drive)
+                        
+                        if drive not in self.drive_letters:
+                            self.drive_letters.add(drive)
+                            print(f"\n💾 USB Drive Attached: {drive} ({drive_info.get('total', 0):.1f} GB)")
+                            self.scan_usb_drive_enhanced(drive)
+                    
+                    for drive in list(self.drive_letters):
+                        if drive not in current_drives:
+                            self.drive_letters.remove(drive)
+                            print(f"\n💾 USB Drive Removed: {drive}")
+                            
+                            if drive in self.file_snapshots:
+                                del self.file_snapshots[drive]
+                            if drive in self.last_full_scan:
+                                del self.last_full_scan[drive]
+                    
+                    time.sleep(MONITOR_INTERVALS['external_drives'])
+                except Exception as e:
+                    print(f"Drive monitor error: {e}")
+                    time.sleep(10)
+        
+        def scan_usb_drive_enhanced(self, drive_path):
+            try:
+                file_snapshot = {}
+                file_count = 0
+                total_size = 0
+                
+                print(f"   📁 Scanning USB drive {drive_path}...")
+                
+                for root, dirs, files in os.walk(drive_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        try:
+                            file_stat = os.stat(file_path)
+                            rel_path = os.path.relpath(file_path, drive_path)
+                            file_snapshot[rel_path] = {
+                                'size': file_stat.st_size,
+                                'mtime': file_stat.st_mtime,
+                                'full_path': file_path
+                            }
+                            file_count += 1
+                            total_size += file_stat.st_size
+                            
+                            if file_count > 10000:
+                                break
+                        except:
+                            pass
+                    
+                    if file_count > 10000:
+                        break
+                
+                self.file_snapshots[drive_path] = file_snapshot
+                self.last_full_scan[drive_path] = time.time()
+                
+                print(f"   ✓ Initial snapshot: {file_count} files, {total_size/(1024**3):.2f} GB")
+            except Exception as e:
+                print(f"   ✗ Error scanning USB drive: {e}")
+        
+        def classify_file_enhanced(self, file_path):
+            sensitive_extensions = {
+                '.doc': 'MEDIUM', '.docx': 'MEDIUM', '.xls': 'MEDIUM', '.xlsx': 'MEDIUM',
+                '.pdf': 'MEDIUM', '.txt': 'LOW', '.csv': 'MEDIUM', '.db': 'HIGH',
+                '.sql': 'HIGH', '.pst': 'HIGH', '.key': 'HIGH', '.pem': 'CRITICAL'
+            }
+            
+            ext = os.path.splitext(file_path)[1].lower()
+            
+            if ext in sensitive_extensions:
+                return sensitive_extensions[ext]
+            
+            lower_path = file_path.lower()
+            if any(word in lower_path for word in ['confidential', 'secret', 'password']):
+                return 'HIGH'
+            
+            return 'LOW'
+        
+        def calculate_file_hash_enhanced(self, file_path):
+            try:
+                file_size = os.path.getsize(file_path)
+                if file_size > 50 * 1024 * 1024:
+                    return None
+                
+                sha256 = hashlib.sha256()
+                with open(file_path, 'rb') as f:
+                    for chunk in iter(lambda: f.read(65536), b''):
+                        sha256.update(chunk)
+                return sha256.hexdigest()
+            except:
+                return None
+        
+        def get_active_process(self):
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                if hwnd:
+                    thread_id, process_id = win32process.GetWindowThreadProcessId(hwnd)
+                    process = psutil.Process(process_id)
+                    return process.name()
+            except:
+                pass
+            return 'explorer.exe'
+        
+        def monitor_usb_data_transfers_enhanced(self):
+            while self.running:
+                try:
+                    for drive_path in list(self.drive_letters):
+                        if drive_path not in self.file_snapshots:
+                            self.scan_usb_drive_enhanced(drive_path)
+                            continue
+                        
+                        last_scan = self.last_full_scan.get(drive_path, 0)
+                        if time.time() - last_scan > self.scan_interval:
+                            try:
+                                current_snapshot = {}
+                                new_files = []
+                                
+                                for root, dirs, files in os.walk(drive_path):
+                                    for file in files:
+                                        file_path = os.path.join(root, file)
+                                        try:
+                                            file_stat = os.stat(file_path)
+                                            rel_path = os.path.relpath(file_path, drive_path)
+                                            
+                                            current_snapshot[rel_path] = {
+                                                'size': file_stat.st_size,
+                                                'mtime': file_stat.st_mtime,
+                                                'full_path': file_path
+                                            }
+                                            
+                                            if rel_path not in self.file_snapshots[drive_path]:
+                                                new_files.append((rel_path, current_snapshot[rel_path]))
+                                            
+                                            if len(current_snapshot) > 20000:
+                                                break
+                                        except:
+                                            pass
+                                    
+                                    if len(current_snapshot) > 20000:
+                                        break
+                                
+                                for rel_path, file_info in new_files:
+                                    file_size = file_info['size']
+                                    full_path = file_info['full_path']
+                                    transfer_key = f"{drive_path}:{rel_path}:{file_size}"
+                                    
+                                    if transfer_key not in self.transfer_history:
+                                        self.transfer_history.add(transfer_key)
+                                        
+                                        if len(self.transfer_history) > 10000:
+                                            self.transfer_history.clear()
+                                        
+                                        classification = self.classify_file_enhanced(full_path)
+                                        size_mb = file_size / (1024 * 1024)
+                                        
+                                        if classification in ['CRITICAL', 'HIGH']:
+                                            print(f"\n🔴 USB TRANSFER ALERT: {classification} file '{os.path.basename(full_path)}' ({size_mb:.2f} MB) copied to USB!")
+                                        elif file_size > 10 * 1024 * 1024:
+                                            print(f"\n⚠️ USB TRANSFER: Large file '{os.path.basename(full_path)}' ({size_mb:.2f} MB) copied to USB")
+                                        elif file_size > 100 * 1024:
+                                            print(f"\n📁 USB Transfer: '{os.path.basename(full_path)}' ({size_mb:.2f} MB)")
+                                        else:
+                                            print(f"   📄 USB Transfer: '{os.path.basename(full_path)}' ({file_size} bytes)")
+                                
+                                self.file_snapshots[drive_path] = current_snapshot
+                                self.last_full_scan[drive_path] = time.time()
+                                
+                                if new_files:
+                                    print(f"   📊 USB Scan: {len(new_files)} new files")
+                            
+                            except Exception as e:
+                                print(f"   ⚠️ USB scan error: {e}")
+                                time.sleep(5)
+                    
+                    time.sleep(self.scan_interval)
+                except Exception as e:
+                    print(f"USB transfer monitor error: {e}")
+                    time.sleep(10)
+        
+        def stop(self):
+            self.running = False
 
 # ============================================
 # DATABASE MANAGER (with deduplication)
