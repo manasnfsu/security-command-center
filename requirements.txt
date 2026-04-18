@@ -1,14 +1,49 @@
+# Core dependencies (all pure-Python, no compilation needed)
 streamlit==1.35.0
 pandas==2.2.2
-plotly==5.24.0
 numpy==1.26.3
-psutil==5.9.8
-requests==2.32.3
+plotly==5.24.1
 python-dotenv==1.0.1
-firebase-admin==6.5.0
+requests==2.31.0
+
+# AI/ML dependencies (pure Python wheels available)
+scikit-learn==1.5.0
+joblib==1.4.2
+
+# Data processing
+sqlite3-utils==3.38
+jinja2==3.1.4
+markdown==3.6
+
+# Email and reporting
+secure-smtplib==0.1.1
+fpdf==1.7.2
+python-docx==1.1.2
+
+# UI enhancements
 streamlit-option-menu==0.3.12
 streamlit-lottie==0.0.5
-scikit-learn==1.5.1
-joblib==1.4.2
-jinja2==3.1.4
-fpdf==1.7.2
+rich==13.7.1
+
+# System monitoring (pure Python versions)
+psutil==5.9.8
+python-wmi==0.1.0  # Works as stub on Linux
+
+# Firebase (optional, for cloud sync)
+firebase-admin==6.5.0
+
+# WebSocket support for real-time features
+websocket-client==1.8.0
+
+# Data visualization
+matplotlib==3.9.0
+seaborn==0.13.2
+
+# Utility libraries
+python-dateutil==2.9.0
+pytz==2024.1
+click==8.1.7
+pyyaml==6.0.1
+
+# Note: pillow is REMOVED because it fails on Streamlit Cloud
+# Use matplotlib for image processing instead
