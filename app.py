@@ -14,25 +14,7 @@ COMPLETE UPGRADE with:
 - Real-time data access for AI
 =======================================================================
 """
-# ============================================
-# FIREBASE INITIALIZATION FOR STREAMLIT CLOUD
-# ============================================
-import firebase_admin
-from firebase_admin import credentials, firestore
-import os
 
-# Initialize Firebase
-if not firebase_admin._apps:
-    # Check for credentials file
-    cred_path = 'firebase_credentials.json'
-    if os.path.exists(cred_path):
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred)
-        db_firestore = firestore.client()
-        print("✅ Firebase Connected!")
-    else:
-        print("⚠️ Firebase credentials not found - using local DB only")
-        db_firestore = None
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -276,6 +258,31 @@ EMAIL_CONFIG = {
     "sender_password": "your_app_password",
     "alert_recipients": ["admin@yourdomain.com", "security@yourdomain.com"]
 }
+
+# ============================================
+# FIREBASE INITIALIZATION FOR STREAMLIT CLOUD
+# ============================================
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+db_firestore = None
+FIREBASE_ENABLED = False
+
+if not firebase_admin._apps:
+    cred_path = 'firebase_credentials.json'
+    if os.path.exists(cred_path):
+        try:
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+            db_firestore = firestore.client()
+            FIREBASE_ENABLED = True
+            print("✅ Firebase Connected!")
+        except Exception as e:
+            print(f"⚠️ Firebase initialization error: {e}")
+            FIREBASE_ENABLED = False
+    else:
+        print("⚠️ Firebase credentials not found - using local DB only")
+        FIREBASE_ENABLED = False
 
 # ============================================
 # DATABASE CONFIGURATION
@@ -1239,6 +1246,7 @@ class DatabaseManager:
         print(f"✅ Database initialized: {self.db_name}")
     
     def insert(self, table, data):
+        """Insert data into SQLite and Firebase"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -1251,9 +1259,42 @@ class DatabaseManager:
             cursor.execute(query, values)
             conn.commit()
             conn.close()
+            
+            # ALSO WRITE TO FIREBASE
+            if FIREBASE_ENABLED and db_firestore:
+                try:
+                    doc_ref = db_firestore.collection(table).document()
+                    # Convert non-serializable types to strings for Firebase
+                    firebase_data = {}
+                    for k, v in data.items():
+                        if isinstance(v, (str, int, float, bool, list, dict, type(None))):
+                            firebase_data[k] = v
+                        else:
+                            firebase_data[k] = str(v)
+                    doc_ref.set(firebase_data)
+                except Exception as e:
+                    print(f"Firebase write error for {table}: {e}")
+            
             return cursor.lastrowid
         except Exception as e:
             return None
+    
+    def get_firebase_collection(self, collection_name):
+        """Get data from Firebase Firestore"""
+        if not FIREBASE_ENABLED or not db_firestore:
+            return pd.DataFrame()
+        
+        try:
+            docs = db_firestore.collection(collection_name).limit(1000).stream()
+            data = []
+            for doc in docs:
+                doc_data = doc.to_dict()
+                doc_data['firebase_id'] = doc.id
+                data.append(doc_data)
+            return pd.DataFrame(data)
+        except Exception as e:
+            print(f"Firebase read error: {e}")
+            return pd.DataFrame()
     
     def is_known_usb_device(self, device_id):
         try:
