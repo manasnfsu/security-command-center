@@ -1,51 +1,23 @@
-# IMPORTANT: Use Python 3.9, 3.10, or 3.11 in Streamlit Cloud settings
-# Python 3.14 is NOT supported yet!
-
-# Core dependencies (using versions with pre-built wheels)
 streamlit==1.28.1
 pandas==2.0.3
 numpy==1.24.3
 plotly==5.17.0
-
-# AI/ML dependencies
 scikit-learn==1.3.2
 joblib==1.3.2
-
-# UI and styling
+psutil==5.9.6
+requests==2.31.0
+jinja2==3.1.2
+python-dotenv==1.0.0
 streamlit-option-menu==0.3.6
 streamlit-lottie==0.0.4
 rich==13.7.0
-
-# Data processing and reporting
-jinja2==3.1.2
 markdown==3.5.1
-python-dotenv==1.0.0
-requests==2.31.0
-
-# System monitoring (pure Python)
-psutil==5.9.6
-
-# Database (sqlite3 is built into Python - remove from requirements!)
-# sqlite3-utils was causing the error - DO NOT include it
-
-# Email (optional)
-secure-smtplib==0.1.1
-
-# Firebase (optional)
-firebase-admin==6.4.0
-
-# Web utilities
-websocket-client==1.6.4
-
-# Visualization
-matplotlib==3.7.5
-seaborn==0.13.0
-
-# Utility libraries
 python-dateutil==2.8.2
 pytz==2023.3
 click==8.1.7
 pyyaml==6.0.1
-
-# Note: pillow is REQUIRED by streamlit but will be installed automatically
-# Do NOT add pillow to requirements.txt - let streamlit handle it
+websocket-client==1.6.4
+matplotlib==3.7.5
+seaborn==0.13.0
+reportlab==4.0.4
+firebase-admin==6.4.0
