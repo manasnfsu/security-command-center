@@ -1,538 +1,855 @@
-#!/usr/bin/env python3
 """
-SECURITY COMMAND CENTER v5.0 - STREAMLIT CLOUD COMPATIBLE
-=========================================================
-Zero compilation dependencies - works on Python 3.14
+System Monitor Dashboard - Streamlit Cloud
+Displays data from the System Monitor's SQLite database and Firebase
 """
 
 import streamlit as st
-import sqlite3
+import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
-import requests
+from datetime import datetime, timedelta
+import sqlite3
 import json
 import os
-import hashlib
-import re
-import time
-from datetime import datetime, timedelta
-import pandas as pd
-import numpy as np
-import warnings
-from streamlit_option_menu import option_menu
-import psutil
+from collections import defaultdict
 
-warnings.filterwarnings('ignore')
-
-# ============================================
-# PAGE CONFIG
-# ============================================
+# Page configuration
 st.set_page_config(
-    page_title="Security Command Center",
-    page_icon="🛡️",
+    page_title="System Monitor Dashboard",
+    page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ============================================
-# CUSTOM CSS
-# ============================================
+# Custom CSS
 st.markdown("""
 <style>
-    .stApp {
-        background: linear-gradient(135deg, #0a0e27 0%, #0f1235 100%);
-    }
     .metric-card {
-        background: linear-gradient(135deg, rgba(20, 30, 70, 0.8), rgba(15, 20, 50, 0.8));
-        border-radius: 15px;
-        padding: 20px;
-        border: 1px solid rgba(0, 255, 255, 0.3);
-        text-align: center;
-    }
-    .metric-card h2 {
-        color: #00ffff !important;
-        font-size: 36px;
-        margin: 0;
-    }
-    .metric-card p {
-        color: #888;
-        margin: 0;
-        font-size: 14px;
-    }
-    .threat-critical {
-        background: linear-gradient(135deg, #ff0000, #8b0000);
-        padding: 10px;
-        border-radius: 8px;
-        margin: 5px 0;
-        color: white;
-    }
-    .threat-high {
-        background: linear-gradient(135deg, #ff4500, #cc3300);
-        padding: 10px;
-        border-radius: 8px;
-        margin: 5px 0;
-        color: white;
-    }
-    .threat-medium {
-        background: linear-gradient(135deg, #ffaa00, #cc8800);
-        padding: 10px;
-        border-radius: 8px;
-        margin: 5px 0;
-        color: white;
-    }
-    h1, h2, h3 {
-        color: #00ffff !important;
-    }
-    .stButton > button {
-        background: linear-gradient(135deg, #00ffff, #0088ff);
-        color: #000;
-        font-weight: bold;
-        border: none;
-        border-radius: 8px;
-        padding: 10px 20px;
-    }
-    .agent-card {
-        background: rgba(20, 30, 70, 0.8);
-        border-radius: 15px;
+        background-color: #f0f2f6;
+        border-radius: 10px;
         padding: 15px;
         margin: 10px 0;
-        border: 1px solid rgba(0, 255, 255, 0.3);
+    }
+    .alert-high {
+        background-color: #ffebee;
+        border-left: 4px solid #f44336;
+        padding: 10px;
+        margin: 5px 0;
+    }
+    .alert-medium {
+        background-color: #fff3e0;
+        border-left: 4px solid #ff9800;
+        padding: 10px;
+        margin: 5px 0;
+    }
+    .alert-low {
+        background-color: #e8f5e9;
+        border-left: 4px solid #4caf50;
+        padding: 10px;
+        margin: 5px 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================
-# OPENROUTER API
-# ============================================
-OPENROUTER_API_KEY = "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"
-OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
+# Initialize session state
+if 'db_conn' not in st.session_state:
+    st.session_state.db_conn = None
+if 'firestore_client' not in st.session_state:
+    st.session_state.firestore_client = None
 
-# ============================================
-# DATABASE SETUP
-# ============================================
-DB_PATH = "system_monitor.db"
+# Database connection functions
+@st.cache_resource
+def init_db_connection():
+    """Initialize SQLite database connection"""
+    try:
+        # Check if database file exists in current directory
+        db_path = "system_monitor.db"
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            return conn
+        return None
+    except Exception as e:
+        st.error(f"Database connection error: {e}")
+        return None
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS alerts
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT,
-                  alert_type TEXT,
-                  severity TEXT,
-                  description TEXT)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS network_packets
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT,
-                  ip_src TEXT,
-                  ip_dst TEXT,
-                  frame_len INTEGER)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS processes
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT,
-                  name TEXT,
-                  pid INTEGER)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS usb_events
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT,
-                  device_name TEXT,
-                  action TEXT)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS agent_info
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  agent_id TEXT UNIQUE,
-                  hostname TEXT,
-                  status TEXT,
-                  last_seen TEXT)''')
-    
-    # Insert sample data if empty
-    c.execute("SELECT COUNT(*) FROM alerts")
-    if c.fetchone()[0] == 0:
-        sample_alerts = [
-            ("2024-01-15 10:30:00", "Port Scan", "HIGH", "Multiple port scans detected from 192.168.1.100"),
-            ("2024-01-15 11:45:00", "Malware Detected", "CRITICAL", "Suspicious process mimikatz.exe found"),
-            ("2024-01-15 14:20:00", "USB Insertion", "MEDIUM", "New USB device inserted"),
-            ("2024-01-16 09:15:00", "Failed Login", "LOW", "Multiple failed login attempts"),
-            ("2024-01-16 13:30:00", "Data Exfiltration", "CRITICAL", "Large outbound data transfer detected"),
-        ]
-        c.executemany("INSERT INTO alerts (timestamp, alert_type, severity, description) VALUES (?,?,?,?)", sample_alerts)
+@st.cache_resource
+def init_firebase():
+    """Initialize Firebase connection using Streamlit secrets"""
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
         
-        sample_packets = [
-            ("2024-01-15 10:30:00", "192.168.1.100", "8.8.8.8", 1500),
-            ("2024-01-15 10:31:00", "192.168.1.101", "1.1.1.1", 1400),
-            ("2024-01-15 10:32:00", "192.168.1.100", "8.8.4.4", 1450),
-        ]
-        c.executemany("INSERT INTO network_packets (timestamp, ip_src, ip_dst, frame_len) VALUES (?,?,?,?)", sample_packets)
-        
-        sample_agents = [
-            ("agent-001", "WORKSTATION-01", "RUNNING", datetime.now().isoformat()),
-            ("agent-002", "SERVER-01", "RUNNING", datetime.now().isoformat()),
-            ("agent-003", "LAPTOP-01", "OFFLINE", (datetime.now() - timedelta(hours=2)).isoformat()),
-        ]
-        c.executemany("INSERT INTO agent_info (agent_id, hostname, status, last_seen) VALUES (?,?,?,?)", sample_agents)
-    
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# ============================================
-# DATA FUNCTIONS
-# ============================================
-def get_alert_stats():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT severity, COUNT(*) as count FROM alerts GROUP BY severity", conn)
-    conn.close()
-    
-    stats = {'total': 0, 'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
-    for _, row in df.iterrows():
-        severity = row['severity']
-        count = row['count']
-        stats['total'] += count
-        if severity == 'CRITICAL':
-            stats['critical'] = count
-        elif severity == 'HIGH':
-            stats['high'] = count
-        elif severity == 'MEDIUM':
-            stats['medium'] = count
-        elif severity == 'LOW':
-            stats['low'] = count
-    return stats
-
-def get_recent_alerts(limit=20):
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(f"SELECT * FROM alerts ORDER BY timestamp DESC LIMIT {limit}", conn)
-    conn.close()
-    return df
-
-def get_network_stats():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT COUNT(*) as count FROM network_packets", conn)
-    total = df.iloc[0]['count']
-    conn.close()
-    return {'total_packets': total}
-
-def get_agent_stats():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT COUNT(*) as count FROM agent_info WHERE status = 'RUNNING'", conn)
-    active = df.iloc[0]['count']
-    df = pd.read_sql_query("SELECT COUNT(*) as count FROM agent_info", conn)
-    total = df.iloc[0]['count']
-    conn.close()
-    return {'active': active, 'total': total}
-
-def get_process_stats():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT COUNT(*) as count FROM processes", conn)
-    total = df.iloc[0]['count']
-    conn.close()
-    return {'total': total}
-
-def get_usb_stats():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT COUNT(*) as count FROM usb_events", conn)
-    total = df.iloc[0]['count']
-    conn.close()
-    return {'total_events': total}
-
-# ============================================
-# AI CHATBOT
-# ============================================
-class SecurityChatbot:
-    def __init__(self):
-        self.messages = []
-    
-    def get_system_stats(self):
-        alert_stats = get_alert_stats()
-        agent_stats = get_agent_stats()
-        network_stats = get_network_stats()
-        
-        return f"""Current Security Statistics:
-- Total Alerts: {alert_stats['total']}
-- Critical Alerts: {alert_stats['critical']}
-- High Alerts: {alert_stats['high']}
-- Active Agents: {agent_stats['active']}
-- Total Agents: {agent_stats['total']}
-- Network Packets: {network_stats['total_packets']}"""
-    
-    def query(self, user_input):
-        try:
-            system_stats = self.get_system_stats()
-            
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
+        if not firebase_admin._apps:
+            # Use Streamlit secrets for Firebase credentials
+            firebase_creds = {
+                "type": st.secrets["firebase"]["type"],
+                "project_id": st.secrets["firebase"]["project_id"],
+                "private_key_id": st.secrets["firebase"]["private_key_id"],
+                "private_key": st.secrets["firebase"]["private_key"].replace('\\n', '\n'),
+                "client_email": st.secrets["firebase"]["client_email"],
+                "client_id": st.secrets["firebase"]["client_id"],
+                "auth_uri": st.secrets["firebase"]["auth_uri"],
+                "token_uri": st.secrets["firebase"]["token_uri"],
+                "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+                "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
             }
-            
-            payload = {
-                "model": "openai/gpt-3.5-turbo",
-                "messages": [
-                    {"role": "system", "content": f"You are a cybersecurity assistant. Here is current system data: {system_stats}"},
-                    {"role": "user", "content": user_input}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 500
-            }
-            
-            response = requests.post(
-                f"{OPENROUTER_API_BASE}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content']
-            else:
-                return self.fallback_response(user_input, system_stats)
-        except Exception as e:
-            return self.fallback_response(user_input, self.get_system_stats())
-    
-    def fallback_response(self, user_input, stats):
-        return f"""Based on current security data:
+            cred = credentials.Certificate(firebase_creds)
+            firebase_admin.initialize_app(cred)
+        
+        return firestore.client()
+    except Exception as e:
+        st.warning(f"Firebase not configured: {e}")
+        return None
 
-{stats}
+# Data fetching functions
+def get_table_names(conn):
+    """Get all table names from database"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = [row[0] for row in cursor.fetchall()]
+    return tables
 
-How can I assist you with your security monitoring needs?"""
+def get_table_data(conn, table_name, limit=1000):
+    """Fetch data from a table"""
+    try:
+        query = f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT {limit}"
+        df = pd.read_sql_query(query, conn)
+        return df
+    except Exception as e:
+        return pd.DataFrame()
 
-# ============================================
-# PAGES
-# ============================================
-def dashboard_page():
-    st.markdown("<h1 style='text-align: center;'>Security Dashboard</h1>", unsafe_allow_html=True)
+def get_alert_summary(conn):
+    """Get alert statistics"""
+    cursor = conn.cursor()
     
-    alert_stats = get_alert_stats()
-    agent_stats = get_agent_stats()
-    network_stats = get_network_stats()
-    process_stats = get_process_stats()
-    usb_stats = get_usb_stats()
+    # Total alerts by severity
+    cursor.execute("""
+        SELECT severity, COUNT(*) as count 
+        FROM alerts 
+        GROUP BY severity
+    """)
+    severity_counts = dict(cursor.fetchall())
     
-    col1, col2, col3, col4, col5 = st.columns(5)
+    # Alerts over time (last 24 hours)
+    cursor.execute("""
+        SELECT 
+            strftime('%H:00', timestamp) as hour,
+            COUNT(*) as count,
+            severity
+        FROM alerts 
+        WHERE timestamp >= datetime('now', '-24 hours')
+        GROUP BY hour, severity
+        ORDER BY hour
+    """)
+    hourly_data = cursor.fetchall()
+    
+    # Recent alerts
+    cursor.execute("""
+        SELECT * FROM alerts 
+        ORDER BY timestamp DESC 
+        LIMIT 50
+    """)
+    recent_alerts = cursor.fetchall()
+    
+    # Unresolved alerts
+    cursor.execute("SELECT COUNT(*) FROM alerts WHERE resolved = 0")
+    unresolved = cursor.fetchone()[0]
+    
+    return {
+        'severity_counts': severity_counts,
+        'hourly_data': hourly_data,
+        'recent_alerts': recent_alerts,
+        'unresolved': unresolved,
+        'total': sum(severity_counts.values()) if severity_counts else 0
+    }
+
+def get_network_stats(conn):
+    """Get network statistics"""
+    cursor = conn.cursor()
+    
+    # Top DNS queries
+    cursor.execute("""
+        SELECT query_name, COUNT(*) as count 
+        FROM dns_queries 
+        GROUP BY query_name 
+        ORDER BY count DESC 
+        LIMIT 10
+    """)
+    top_dns = cursor.fetchall()
+    
+    # Top HTTP hosts
+    cursor.execute("""
+        SELECT host, COUNT(*) as count 
+        FROM http_transactions 
+        WHERE host IS NOT NULL
+        GROUP BY host 
+        ORDER BY count DESC 
+        LIMIT 10
+    """)
+    top_http = cursor.fetchall()
+    
+    # Network flows summary
+    cursor.execute("""
+        SELECT 
+            protocol,
+            COUNT(*) as flow_count,
+            SUM(packets) as total_packets,
+            SUM(bytes) as total_bytes
+        FROM network_flows
+        GROUP BY protocol
+    """)
+    flow_summary = cursor.fetchall()
+    
+    # Network threats
+    cursor.execute("""
+        SELECT threat_type, severity, COUNT(*) as count
+        FROM network_threats
+        GROUP BY threat_type, severity
+        ORDER BY count DESC
+    """)
+    threats = cursor.fetchall()
+    
+    return {
+        'top_dns': top_dns,
+        'top_http': top_http,
+        'flow_summary': flow_summary,
+        'threats': threats
+    }
+
+def get_process_stats(conn):
+    """Get process statistics"""
+    cursor = conn.cursor()
+    
+    # Top processes by CPU
+    cursor.execute("""
+        SELECT name, MAX(cpu_percent) as max_cpu, AVG(cpu_percent) as avg_cpu
+        FROM processes
+        WHERE cpu_percent > 0
+        GROUP BY name
+        ORDER BY max_cpu DESC
+        LIMIT 10
+    """)
+    top_cpu = cursor.fetchall()
+    
+    # Process events summary
+    cursor.execute("""
+        SELECT event_type, COUNT(*) as count
+        FROM process_events
+        GROUP BY event_type
+    """)
+    events = dict(cursor.fetchall())
+    
+    return {
+        'top_cpu': top_cpu,
+        'events': events,
+        'total_processes': len([p for p in cursor.execute("SELECT DISTINCT pid FROM processes")])
+    }
+
+def get_usb_stats(conn):
+    """Get USB/DLP statistics"""
+    cursor = conn.cursor()
+    
+    # USB devices
+    cursor.execute("""
+        SELECT event_type, COUNT(*) as count
+        FROM usb_devices
+        GROUP BY event_type
+    """)
+    device_events = dict(cursor.fetchall())
+    
+    # File activity by category
+    cursor.execute("""
+        SELECT file_category, risk_level, COUNT(*) as count
+        FROM usb_file_activity
+        GROUP BY file_category, risk_level
+        ORDER BY count DESC
+    """)
+    file_activity = cursor.fetchall()
+    
+    # Recent file operations
+    cursor.execute("""
+        SELECT operation, COUNT(*) as count
+        FROM usb_file_activity
+        GROUP BY operation
+    """)
+    operations = dict(cursor.fetchall())
+    
+    return {
+        'device_events': device_events,
+        'file_activity': file_activity,
+        'operations': operations,
+        'total_files': cursor.execute("SELECT COUNT(*) FROM usb_file_activity").fetchone()[0]
+    }
+
+def get_hardware_summary(conn):
+    """Get hardware summary"""
+    cursor = conn.cursor()
+    
+    # CPU info
+    cpu = cursor.execute("SELECT * FROM cpu_info ORDER BY timestamp DESC LIMIT 1").fetchone()
+    
+    # Memory info
+    memory = cursor.execute("SELECT * FROM memory_info ORDER BY timestamp DESC LIMIT 1").fetchone()
+    
+    # Disks
+    disks = cursor.execute("SELECT * FROM disks").fetchall()
+    
+    return {
+        'cpu': cpu,
+        'memory': memory,
+        'disks': disks
+    }
+
+# Main dashboard
+def main():
+    st.title("🖥️ System Monitor Dashboard")
+    st.markdown("---")
+    
+    # Initialize connections
+    conn = init_db_connection()
+    firestore_client = init_firebase()
+    
+    # Sidebar
+    with st.sidebar:
+        st.image("https://img.icons8.com/color/96/000000/security-checked--v1.png", width=80)
+        st.title("System Monitor")
+        
+        # Database status
+        if conn:
+            st.success("✅ SQLite Connected")
+            tables = get_table_names(conn)
+            st.caption(f"Tables: {len(tables)}")
+        else:
+            st.error("❌ SQLite Database not found")
+            st.info("Upload your `system_monitor.db` file to the app directory")
+        
+        if firestore_client:
+            st.success("✅ Firebase Connected")
+        else:
+            st.warning("⚠️ Firebase not configured")
+        
+        st.markdown("---")
+        
+        # Navigation
+        st.subheader("Navigation")
+        page = st.radio(
+            "Go to",
+            ["🏠 Dashboard", "🌐 Network", "📊 Processes", "🚨 Alerts", 
+             "💾 USB/DLP", "🖥️ Hardware", "📦 Software", "📈 Performance"],
+            label_visibility="collapsed"
+        )
+        
+        st.markdown("---")
+        st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if st.button("🔄 Refresh Data"):
+            st.cache_data.clear()
+            st.rerun()
+    
+    # Page routing
+    if page == "🏠 Dashboard":
+        show_dashboard(conn)
+    elif page == "🌐 Network":
+        show_network_page(conn)
+    elif page == "📊 Processes":
+        show_processes_page(conn)
+    elif page == "🚨 Alerts":
+        show_alerts_page(conn)
+    elif page == "💾 USB/DLP":
+        show_usb_page(conn)
+    elif page == "🖥️ Hardware":
+        show_hardware_page(conn)
+    elif page == "📦 Software":
+        show_software_page(conn)
+    elif page == "📈 Performance":
+        show_performance_page(conn)
+
+def show_dashboard(conn):
+    """Main dashboard view"""
+    st.header("📊 System Overview")
+    
+    if not conn:
+        st.error("No database connection. Please upload your system_monitor.db file.")
+        return
+    
+    # Get all stats
+    alert_stats = get_alert_summary(conn)
+    network_stats = get_network_stats(conn)
+    process_stats = get_process_stats(conn)
+    usb_stats = get_usb_stats(conn)
+    
+    # Top metrics row
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <p>Total Alerts</p>
-            <h2>{alert_stats['total']}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Total Alerts", alert_stats['total'], 
+                  delta=f"{alert_stats['unresolved']} unresolved")
     
     with col2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <p>Critical Alerts</p>
-            <h2 style="color: #ff4444;">{alert_stats['critical']}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Active Processes", process_stats.get('total_processes', 0))
     
     with col3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <p>Active Agents</p>
-            <h2>{agent_stats['active']}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("USB File Ops", usb_stats.get('total_files', 0))
     
     with col4:
-        st.markdown(f"""
-        <div class="metric-card">
-            <p>Network Packets</p>
-            <h2>{network_stats['total_packets']}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col5:
-        st.markdown(f"""
-        <div class="metric-card">
-            <p>USB Events</p>
-            <h2>{usb_stats['total_events']}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+        # Get packet count
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM network_packets")
+        packet_count = cursor.fetchone()[0]
+        st.metric("Network Packets", f"{packet_count:,}")
     
     st.markdown("---")
-    st.markdown("### Recent Alerts")
     
-    alerts = get_recent_alerts(10)
-    if len(alerts) > 0:
-        for _, alert in alerts.iterrows():
-            severity = alert['severity']
-            severity_class = "threat-critical" if severity == "CRITICAL" else "threat-high" if severity == "HIGH" else "threat-medium"
-            st.markdown(f"""
-            <div class="{severity_class}">
-                <strong>[{severity}]</strong> {alert['alert_type']}<br>
-                <small>{alert['timestamp']}</small><br>
-                {alert['description'][:100]}
-            </div>
-            """, unsafe_allow_html=True)
+    # Alerts section
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("🚨 Alert Severity Distribution")
+        if alert_stats['severity_counts']:
+            fig = px.pie(
+                values=list(alert_stats['severity_counts'].values()),
+                names=list(alert_stats['severity_counts'].keys()),
+                color=list(alert_stats['severity_counts'].keys()),
+                color_discrete_map={'HIGH': '#f44336', 'MEDIUM': '#ff9800', 'LOW': '#4caf50'}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No alerts recorded")
+    
+    with col2:
+        st.subheader("📡 Network Activity")
+        if network_stats['top_dns']:
+            top_dns_df = pd.DataFrame(network_stats['top_dns'], columns=['Domain', 'Queries'])
+            fig = px.bar(top_dns_df, x='Domain', y='Queries', title="Top DNS Queries")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No DNS data available")
+    
+    # Recent alerts
+    st.subheader("🔔 Recent Alerts")
+    if alert_stats['recent_alerts']:
+        for alert in alert_stats['recent_alerts'][:5]:
+            severity = alert[2]  # severity column
+            description = alert[4]  # description column
+            timestamp = alert[1]  # timestamp column
+            
+            if severity == 'HIGH':
+                st.markdown(f'<div class="alert-high">⚠️ **{timestamp}** - {description}</div>', unsafe_allow_html=True)
+            elif severity == 'MEDIUM':
+                st.markdown(f'<div class="alert-medium">⚡ **{timestamp}** - {description}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="alert-low">ℹ️ **{timestamp}** - {description}</div>', unsafe_allow_html=True)
     else:
-        st.info("No alerts found")
+        st.info("No recent alerts")
+    
+    # Network threats
+    if network_stats['threats']:
+        st.subheader("🛡️ Network Threats Detected")
+        threats_df = pd.DataFrame(network_stats['threats'], columns=['Threat Type', 'Severity', 'Count'])
+        st.dataframe(threats_df, use_container_width=True)
 
-def agents_page():
-    st.markdown("<h1 style='text-align: center;'>Agent Management</h1>", unsafe_allow_html=True)
+def show_network_page(conn):
+    """Network monitoring page"""
+    st.header("🌐 Network Monitoring")
     
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT * FROM agent_info ORDER BY last_seen DESC", conn)
-    conn.close()
+    if not conn:
+        st.error("No database connection")
+        return
     
-    if len(df) > 0:
-        for _, agent in df.iterrows():
-            status_color = "#00ff00" if agent['status'] == 'RUNNING' else "#ff4444"
-            st.markdown(f"""
-            <div class="agent-card">
-                <div style="display: flex; justify-content: space-between;">
-                    <div>
-                        <strong>🖥️ {agent['hostname']}</strong><br>
-                        <small>ID: {agent['agent_id']}</small>
-                    </div>
-                    <div>
-                        <span style="color: {status_color};">● {agent['status']}</span><br>
-                        <small>Last seen: {agent['last_seen'][:19]}</small>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.info("No agents registered")
+    tabs = st.tabs(["DNS Queries", "HTTP Traffic", "Network Flows", "Threats"])
+    
+    with tabs[0]:
+        st.subheader("DNS Query Log")
+        dns_df = get_table_data(conn, "dns_queries", limit=500)
+        if not dns_df.empty:
+            # Filter options
+            col1, col2 = st.columns(2)
+            with col1:
+                search = st.text_input("Search domain", "")
+            with col2:
+                show_entropy = st.checkbox("Show high entropy (>4.0)", False)
+            
+            if search:
+                dns_df = dns_df[dns_df['query_name'].str.contains(search, case=False, na=False)]
+            if show_entropy:
+                dns_df = dns_df[dns_df['entropy'] > 4.0]
+            
+            st.dataframe(
+                dns_df[['timestamp', 'query_name', 'client_ip', 'entropy', 'process_name']].head(100),
+                use_container_width=True
+            )
+            
+            # Entropy distribution
+            fig = px.histogram(dns_df, x='entropy', nbins=50, title="DNS Query Entropy Distribution")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No DNS data")
+    
+    with tabs[1]:
+        st.subheader("HTTP Transactions")
+        http_df = get_table_data(conn, "http_transactions", limit=500)
+        if not http_df.empty:
+            st.dataframe(
+                http_df[['timestamp', 'method', 'host', 'uri', 'status', 'process_name']].head(100),
+                use_container_width=True
+            )
+        else:
+            st.info("No HTTP data")
+    
+    with tabs[2]:
+        st.subheader("Network Flows")
+        flows_df = get_table_data(conn, "network_flows", limit=500)
+        if not flows_df.empty:
+            st.dataframe(
+                flows_df[['first_seen', 'src_ip', 'dst_ip', 'protocol', 'packets', 'bytes', 'application']].head(100),
+                use_container_width=True
+            )
+        else:
+            st.info("No flow data")
+    
+    with tabs[3]:
+        st.subheader("Network Threats")
+        threats_df = get_table_data(conn, "network_threats", limit=500)
+        if not threats_df.empty:
+            st.dataframe(
+                threats_df[['timestamp', 'threat_type', 'severity', 'process_name', 'remote_ip', 'remote_port', 'evidence']].head(100),
+                use_container_width=True
+            )
+        else:
+            st.info("No threats detected")
 
-def network_page():
-    st.markdown("<h1 style='text-align: center;'>Network Monitor</h1>", unsafe_allow_html=True)
+def show_processes_page(conn):
+    """Process monitoring page"""
+    st.header("📊 Process Monitoring")
     
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT * FROM network_packets ORDER BY timestamp DESC LIMIT 50", conn)
-    conn.close()
+    if not conn:
+        st.error("No database connection")
+        return
     
-    if len(df) > 0:
-        st.dataframe(df, use_container_width=True)
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Process Events Timeline")
+        events_df = get_table_data(conn, "process_events", limit=1000)
+        if not events_df.empty:
+            events_df['hour'] = pd.to_datetime(events_df['timestamp']).dt.hour
+            event_counts = events_df.groupby(['hour', 'event_type']).size().reset_index(name='count')
+            fig = px.bar(event_counts, x='hour', y='count', color='event_type', title="Process Events by Hour")
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("Top Processes by CPU")
+        processes_df = get_table_data(conn, "processes", limit=1000)
+        if not processes_df.empty:
+            top_cpu = processes_df.nlargest(10, 'cpu_percent')[['name', 'cpu_percent', 'memory_percent', 'username']]
+            fig = px.bar(top_cpu, x='name', y='cpu_percent', title="CPU Usage by Process")
+            st.plotly_chart(fig, use_container_width=True)
+    
+    st.subheader("Recent Process Activity")
+    recent_procs = get_table_data(conn, "process_events", limit=200)
+    if not recent_procs.empty:
+        st.dataframe(
+            recent_procs[['timestamp', 'event_type', 'name', 'exe_path', 'username']].head(100),
+            use_container_width=True
+        )
+
+def show_alerts_page(conn):
+    """Alerts management page"""
+    st.header("🚨 Security Alerts")
+    
+    if not conn:
+        st.error("No database connection")
+        return
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        severity_filter = st.selectbox("Severity", ["All", "HIGH", "MEDIUM", "LOW"])
+    with col2:
+        source_filter = st.selectbox("Source", ["All", "NetworkDPI", "ProcessMonitor", "FileMonitor", "USBMonitor", "NetworkThreatMonitor"])
+    with col3:
+        resolved_filter = st.selectbox("Status", ["All", "Open", "Resolved"])
+    
+    # Get alerts
+    cursor = conn.cursor()
+    query = "SELECT * FROM alerts WHERE 1=1"
+    params = []
+    
+    if severity_filter != "All":
+        query += " AND severity = ?"
+        params.append(severity_filter)
+    if source_filter != "All":
+        query += " AND source = ?"
+        params.append(source_filter)
+    if resolved_filter == "Open":
+        query += " AND resolved = 0"
+    elif resolved_filter == "Resolved":
+        query += " AND resolved = 1"
+    
+    query += " ORDER BY timestamp DESC"
+    
+    alerts_df = pd.read_sql_query(query, conn, params=params)
+    
+    st.write(f"Found {len(alerts_df)} alerts")
+    
+    # Display alerts
+    for _, alert in alerts_df.iterrows():
+        severity = alert['severity']
+        timestamp = alert['timestamp'][:19] if alert['timestamp'] else ''
+        alert_type = alert['alert_type']
+        description = alert['description']
+        source = alert['source']
         
-        # Simple chart
-        fig = go.Figure(data=[go.Bar(x=df['timestamp'].head(10), y=df['frame_len'].head(10), marker_color='#00ffff')])
-        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', title="Packet Sizes")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No network data available")
-
-def threat_intel_page():
-    st.markdown("<h1 style='text-align: center;'>Threat Intelligence</h1>", unsafe_allow_html=True)
-    
-    mitre_attacks = {
-        "T1046": {"name": "Network Service Scanning", "tactic": "Discovery", "severity": "HIGH"},
-        "T1003": {"name": "Credential Dumping", "tactic": "Credential Access", "severity": "CRITICAL"},
-        "T1055": {"name": "Process Injection", "tactic": "Defense Evasion", "severity": "HIGH"},
-        "T1486": {"name": "Ransomware", "tactic": "Impact", "severity": "CRITICAL"},
-        "T1566": {"name": "Phishing", "tactic": "Initial Access", "severity": "HIGH"},
-    }
-    
-    for tid, attack in mitre_attacks.items():
-        severity_color = "#ff0000" if attack['severity'] == "CRITICAL" else "#ffaa00"
-        st.markdown(f"""
-        <div style="background: rgba(20,30,70,0.8); border-radius: 10px; padding: 15px; margin: 10px 0;">
-            <strong style="color: #00ffff;">{tid}: {attack['name']}</strong><br>
-            <span>Tactic: {attack['tactic']}</span> | <span style="color: {severity_color};">Severity: {attack['severity']}</span>
-        </div>
-        """, unsafe_allow_html=True)
-
-def ai_assistant_page():
-    st.markdown("<h1 style='text-align: center;'>🤖 AI Security Assistant</h1>", unsafe_allow_html=True)
-    
-    if 'chatbot' not in st.session_state:
-        st.session_state.chatbot = SecurityChatbot()
-    
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
-    
-    for msg in st.session_state.messages:
-        if msg['role'] == 'user':
+        if severity == 'HIGH':
             st.markdown(f"""
-            <div style="background: rgba(0, 100, 200, 0.3); padding: 10px; border-radius: 10px; margin: 5px 0;">
-                <strong>👤 You:</strong> {msg['content']}
+            <div class="alert-high">
+                <strong>[{severity}]</strong> {alert_type}<br>
+                <small>{timestamp} | {source}</small><br>
+                {description}
+            </div>
+            """, unsafe_allow_html=True)
+        elif severity == 'MEDIUM':
+            st.markdown(f"""
+            <div class="alert-medium">
+                <strong>[{severity}]</strong> {alert_type}<br>
+                <small>{timestamp} | {source}</small><br>
+                {description}
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown(f"""
-            <div style="background: rgba(0, 200, 100, 0.2); padding: 10px; border-radius: 10px; margin: 5px 0;">
-                <strong>🤖 AI:</strong> {msg['content']}
+            <div class="alert-low">
+                <strong>[{severity}]</strong> {alert_type}<br>
+                <small>{timestamp} | {source}</small><br>
+                {description}
             </div>
             """, unsafe_allow_html=True)
-    
-    user_input = st.text_area("Ask about security:", placeholder="How many critical alerts?")
-    
-    if st.button("Send", use_container_width=True):
-        if user_input:
-            st.session_state.messages.append({'role': 'user', 'content': user_input})
-            response = st.session_state.chatbot.query(user_input)
-            st.session_state.messages.append({'role': 'assistant', 'content': response})
-            st.rerun()
 
-def reports_page():
-    st.markdown("<h1 style='text-align: center;'>Reports</h1>", unsafe_allow_html=True)
+def show_usb_page(conn):
+    """USB/DLP monitoring page"""
+    st.header("💾 USB Device & DLP Monitoring")
     
-    alert_stats = get_alert_stats()
-    agent_stats = get_agent_stats()
+    if not conn:
+        st.error("No database connection")
+        return
     
-    report = f"""Security Command Center Report
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-{'='*50}
-
-ALERT SUMMARY:
-- Total Alerts: {alert_stats['total']}
-- Critical: {alert_stats['critical']}
-- High: {alert_stats['high']}
-- Medium: {alert_stats['medium']}
-- Low: {alert_stats['low']}
-
-AGENT STATUS:
-- Active Agents: {agent_stats['active']}
-- Total Agents: {agent_stats['total']}
-
-This report was generated automatically by Security Command Center.
-"""
+    tabs = st.tabs(["USB Devices", "File Activity", "Risk Analysis"])
     
-    st.download_button("Download Report", report, f"security_report_{datetime.now().strftime('%Y%m%d')}.txt")
-
-# ============================================
-# MAIN
-# ============================================
-def main():
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = True  # Skip login for cloud
+    with tabs[0]:
+        st.subheader("USB Device Events")
+        devices_df = get_table_data(conn, "usb_devices", limit=200)
+        if not devices_df.empty:
+            st.dataframe(
+                devices_df[['timestamp', 'event_type', 'drive_letter', 'volume_label', 'capacity_gb']],
+                use_container_width=True
+            )
+            
+            # Device connection timeline
+            conn_counts = devices_df[devices_df['event_type'] == 'CONNECTED'].groupby(
+                pd.to_datetime(devices_df['timestamp']).dt.date
+            ).size()
+            if not conn_counts.empty:
+                fig = px.line(x=conn_counts.index, y=conn_counts.values, title="USB Connections Over Time")
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No USB device data")
     
-    with st.sidebar:
-        st.markdown("""
-        <div style="text-align: center; padding: 20px 0;">
-            <div style="font-size: 48px;">🛡️</div>
-            <h2>Security Command</h2>
-        </div>
-        """, unsafe_allow_html=True)
+    with tabs[1]:
+        st.subheader("USB File Activity")
+        file_activity_df = get_table_data(conn, "usb_file_activity", limit=500)
+        if not file_activity_df.empty:
+            st.dataframe(
+                file_activity_df[['timestamp', 'operation', 'file_path', 'file_size', 'risk_level', 'file_category']].head(100),
+                use_container_width=True
+            )
+            
+            # Operation distribution
+            op_counts = file_activity_df['operation'].value_counts()
+            fig = px.pie(values=op_counts.values, names=op_counts.index, title="File Operations Distribution")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No USB file activity")
+    
+    with tabs[2]:
+        st.subheader("Risk Level Analysis")
+        file_activity_df = get_table_data(conn, "usb_file_activity", limit=1000)
+        if not file_activity_df.empty:
+            risk_by_category = file_activity_df.groupby(['file_category', 'risk_level']).size().reset_index(name='count')
+            fig = px.bar(risk_by_category, x='file_category', y='count', color='risk_level', 
+                        title="Risk Level by File Category")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data for risk analysis")
+
+def show_hardware_page(conn):
+    """Hardware inventory page"""
+    st.header("🖥️ Hardware Inventory")
+    
+    if not conn:
+        st.error("No database connection")
+        return
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("CPU Information")
+        cpu_df = get_table_data(conn, "cpu_info", limit=1)
+        if not cpu_df.empty:
+            cpu = cpu_df.iloc[0]
+            st.write(f"**Name:** {cpu['name']}")
+            st.write(f"**Cores:** {cpu['cores']} physical, {cpu['logical_cores']} logical")
+            st.write(f"**Max Frequency:** {cpu['max_freq']} MHz")
+            st.write(f"**Current Usage:** {cpu['usage_percent']}%")
+        else:
+            st.info("No CPU data")
+    
+    with col2:
+        st.subheader("Memory Information")
+        mem_df = get_table_data(conn, "memory_info", limit=1)
+        if not mem_df.empty:
+            mem = mem_df.iloc[0]
+            st.write(f"**Total:** {mem['total']:.2f} GB")
+            st.write(f"**Used:** {mem['used']:.2f} GB")
+            st.write(f"**Available:** {mem['available']:.2f} GB")
+            st.write(f"**Usage:** {mem['percent']}%")
+            
+            # Memory gauge
+            fig = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=mem['percent'],
+                title={'text': "Memory Usage"},
+                gauge={'axis': {'range': [0, 100]},
+                       'bar': {'color': "red" if mem['percent'] > 90 else "orange" if mem['percent'] > 70 else "green"},
+                       'steps': [
+                           {'range': [0, 70], 'color': "lightgreen"},
+                           {'range': [70, 90], 'color': "orange"},
+                           {'range': [90, 100], 'color': "red"}],
+                       'threshold': {'value': 90, 'color': "red"}}))
+            st.plotly_chart(fig, use_container_width=True)
+    
+    st.subheader("Disk Drives")
+    disks_df = get_table_data(conn, "disks")
+    if not disks_df.empty:
+        for _, disk in disks_df.iterrows():
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.write(f"**{disk['device']}**")
+                st.caption(disk['mountpoint'])
+            with col2:
+                used_percent = disk['percent']
+                st.progress(used_percent / 100)
+                st.write(f"{disk['used']:.1f} GB / {disk['total']:.1f} GB ({used_percent:.0f}% used)")
+            st.markdown("---")
+    else:
+        st.info("No disk data")
+
+def show_software_page(conn):
+    """Software inventory page"""
+    st.header("📦 Software Inventory")
+    
+    if not conn:
+        st.error("No database connection")
+        return
+    
+    tabs = st.tabs(["Installed Software", "Software Events"])
+    
+    with tabs[0]:
+        st.subheader("Installed Applications")
+        software_df = get_table_data(conn, "software", limit=500)
+        if not software_df.empty:
+            search = st.text_input("Search software", "")
+            if search:
+                software_df = software_df[software_df['name'].str.contains(search, case=False, na=False)]
+            
+            st.dataframe(
+                software_df[['name', 'version', 'publisher', 'install_date']].head(200),
+                use_container_width=True
+            )
+            st.caption(f"Total: {len(software_df)} installed applications")
+        else:
+            st.info("No software data")
+    
+    with tabs[1]:
+        st.subheader("Software Installation/Uninstallation Events")
+        events_df = get_table_data(conn, "software_events", limit=500)
+        if not events_df.empty:
+            # Filter by event type
+            event_type = st.selectbox("Event Type", ["All", "INSTALLED", "UNINSTALLED", "UPDATED"])
+            if event_type != "All":
+                events_df = events_df[events_df['event_type'] == event_type]
+            
+            st.dataframe(
+                events_df[['timestamp', 'event_type', 'name', 'version', 'publisher']].head(100),
+                use_container_width=True
+            )
+            
+            # Event timeline
+            events_df['date'] = pd.to_datetime(events_df['timestamp']).dt.date
+            timeline = events_df.groupby(['date', 'event_type']).size().reset_index(name='count')
+            fig = px.line(timeline, x='date', y='count', color='event_type', title="Software Events Timeline")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No software events")
+
+def show_performance_page(conn):
+    """Performance monitoring page"""
+    st.header("📈 System Performance")
+    
+    if not conn:
+        st.error("No database connection")
+        return
+    
+    perf_df = get_table_data(conn, "performance", limit=1000)
+    
+    if not perf_df.empty:
+        # Convert timestamp
+        perf_df['timestamp'] = pd.to_datetime(perf_df['timestamp'])
+        perf_df = perf_df.sort_values('timestamp')
         
-        selected = option_menu(
-            menu_title=None,
-            options=["Dashboard", "Agents", "Threat Intelligence", "Network Monitor", "AI Assistant", "Reports"],
-            icons=["house", "people", "exclamation-triangle", "wifi", "robot", "file-text"],
-            menu_icon="cast",
-            default_index=0,
-            styles={
-                "container": {"padding": "0!important"},
-                "icon": {"color": "#00ffff"},
-                "nav-link": {"color": "#fff"},
-                "nav-link-selected": {"background-color": "rgba(0, 255, 255, 0.2)"},
-            }
-        )
-    
-    if selected == "Dashboard":
-        dashboard_page()
-    elif selected == "Agents":
-        agents_page()
-    elif selected == "Threat Intelligence":
-        threat_intel_page()
-    elif selected == "Network Monitor":
-        network_page()
-    elif selected == "AI Assistant":
-        ai_assistant_page()
-    elif selected == "Reports":
-        reports_page()
+        # CPU Usage
+        st.subheader("CPU Usage Over Time")
+        fig = px.line(perf_df, x='timestamp', y='cpu_percent', title="CPU Usage %")
+        fig.add_hline(y=90, line_dash="dash", line_color="red", annotation_text="Critical")
+        fig.add_hline(y=70, line_dash="dash", line_color="orange", annotation_text="Warning")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Memory Usage
+        st.subheader("Memory Usage Over Time")
+        fig = px.line(perf_df, x='timestamp', y='memory_percent', title="Memory Usage %")
+        fig.add_hline(y=90, line_dash="dash", line_color="red", annotation_text="Critical")
+        fig.add_hline(y=70, line_dash="dash", line_color="orange", annotation_text="Warning")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Network I/O
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Network Sent")
+            fig = px.area(perf_df, x='timestamp', y='net_io_sent', title="Bytes Sent")
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.subheader("Network Received")
+            fig = px.area(perf_df, x='timestamp', y='net_io_recv', title="Bytes Received")
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Process count
+        st.subheader("Process Count")
+        fig = px.line(perf_df, x='timestamp', y='processes_count', title="Running Processes")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Summary stats
+        st.subheader("Performance Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Avg CPU", f"{perf_df['cpu_percent'].mean():.1f}%")
+        with col2:
+            st.metric("Max CPU", f"{perf_df['cpu_percent'].max():.1f}%")
+        with col3:
+            st.metric("Avg Memory", f"{perf_df['memory_percent'].mean():.1f}%")
+        with col4:
+            st.metric("Max Memory", f"{perf_df['memory_percent'].max():.1f}%")
+    else:
+        st.info("No performance data available")
 
 if __name__ == "__main__":
     main()
