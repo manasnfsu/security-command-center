@@ -1,15 +1,13 @@
 """
 System Monitor Dashboard - Streamlit Cloud
-Minimal working version with hardcoded Firebase credentials
+Hardcoded Firebase credentials - Python 3.11 compatible
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 import sqlite3
-import json
 import os
 
 # ============================================
@@ -30,33 +28,14 @@ FIREBASE_CONFIG = {
 }
 
 # Page config
-st.set_page_config(
-    page_title="System Monitor Dashboard",
-    page_icon="🖥️",
-    layout="wide"
-)
+st.set_page_config(page_title="System Monitor", page_icon="🖥️", layout="wide")
 
 # Custom CSS
 st.markdown("""
 <style>
-    .alert-high {
-        background-color: #ffebee;
-        border-left: 4px solid #f44336;
-        padding: 10px;
-        margin: 5px 0;
-    }
-    .alert-medium {
-        background-color: #fff3e0;
-        border-left: 4px solid #ff9800;
-        padding: 10px;
-        margin: 5px 0;
-    }
-    .alert-low {
-        background-color: #e8f5e9;
-        border-left: 4px solid #4caf50;
-        padding: 10px;
-        margin: 5px 0;
-    }
+.alert-high { background-color: #ffebee; border-left: 4px solid #f44336; padding: 10px; margin: 5px 0; }
+.alert-medium { background-color: #fff3e0; border-left: 4px solid #ff9800; padding: 10px; margin: 5px 0; }
+.alert-low { background-color: #e8f5e9; border-left: 4px solid #4caf50; padding: 10px; margin: 5px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,178 +45,112 @@ def init_firebase():
     try:
         import firebase_admin
         from firebase_admin import credentials, firestore
-        
         if not firebase_admin._apps:
             cred = credentials.Certificate(FIREBASE_CONFIG)
             firebase_admin.initialize_app(cred)
             return firestore.client()
-        return firestore.client()
     except Exception as e:
         st.warning(f"Firebase not available: {e}")
-        return None
+    return None
 
 # Database connection
 @st.cache_resource
 def init_db():
-    db_path = "system_monitor.db"
-    if os.path.exists(db_path):
-        return sqlite3.connect(db_path, check_same_thread=False)
+    if os.path.exists("system_monitor.db"):
+        return sqlite3.connect("system_monitor.db", check_same_thread=False)
     return None
-
-def get_table_data(conn, table_name, limit=500):
-    try:
-        query = f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT {limit}"
-        return pd.read_sql_query(query, conn)
-    except:
-        return pd.DataFrame()
 
 def main():
     st.title("🖥️ System Monitor Dashboard")
     
-    # Initialize
-    db_conn = init_db()
-    firestore_client = init_firebase()
+    db = init_db()
+    firebase = init_firebase()
     
     # Sidebar
     with st.sidebar:
         st.image("https://img.icons8.com/color/96/000000/security-checked--v1.png", width=80)
-        st.title("Navigation")
         
-        if db_conn:
-            st.success("✅ SQLite Connected")
+        if db:
+            st.success("✅ Database connected")
         else:
-            st.error("❌ No database file")
+            st.error("❌ No database")
             uploaded = st.file_uploader("Upload system_monitor.db", type=['db'])
             if uploaded:
                 with open("system_monitor.db", "wb") as f:
                     f.write(uploaded.getbuffer())
                 st.rerun()
         
-        if firestore_client:
-            st.success("✅ Firebase Connected")
+        if firebase:
+            st.success("✅ Firebase connected")
         
-        page = st.radio("Pages", ["Dashboard", "Alerts", "Network", "Processes", "USB/DLP"])
+        st.markdown("---")
+        page = st.radio("Pages", ["Dashboard", "Alerts", "Network", "USB"])
     
-    if db_conn:
+    if db:
         if page == "Dashboard":
-            show_dashboard(db_conn)
+            show_dashboard(db)
         elif page == "Alerts":
-            show_alerts(db_conn)
+            show_alerts(db)
         elif page == "Network":
-            show_network(db_conn)
-        elif page == "Processes":
-            show_processes(db_conn)
-        elif page == "USB/DLP":
-            show_usb(db_conn)
-    else:
-        st.info("👈 Upload your system_monitor.db file to get started")
+            show_network(db)
+        elif page == "USB":
+            show_usb(db)
 
 def show_dashboard(conn):
     st.header("📊 Overview")
     
-    # Get counts
     cursor = conn.cursor()
-    
     col1, col2, col3, col4 = st.columns(4)
     
-    with col1:
-        cursor.execute("SELECT COUNT(*) FROM alerts")
-        alert_count = cursor.fetchone()[0]
-        st.metric("Total Alerts", alert_count)
+    cursor.execute("SELECT COUNT(*) FROM alerts")
+    with col1: st.metric("Total Alerts", cursor.fetchone()[0])
     
-    with col2:
-        cursor.execute("SELECT COUNT(*) FROM network_packets")
-        packet_count = cursor.fetchone()[0]
-        st.metric("Network Packets", f"{packet_count:,}")
+    cursor.execute("SELECT COUNT(*) FROM network_packets")
+    with col2: st.metric("Network Packets", f"{cursor.fetchone()[0]:,}")
     
-    with col3:
-        cursor.execute("SELECT COUNT(DISTINCT pid) FROM processes")
-        proc_count = cursor.fetchone()[0]
-        st.metric("Processes", proc_count)
+    cursor.execute("SELECT COUNT(DISTINCT pid) FROM processes")
+    with col3: st.metric("Processes", cursor.fetchone()[0])
     
-    with col4:
-        cursor.execute("SELECT COUNT(*) FROM usb_devices")
-        usb_count = cursor.fetchone()[0]
-        st.metric("USB Events", usb_count)
+    cursor.execute("SELECT COUNT(*) FROM usb_devices")
+    with col4: st.metric("USB Events", cursor.fetchone()[0])
     
     # Recent alerts
     st.subheader("🔔 Recent Alerts")
-    alerts_df = get_table_data(conn, "alerts", limit=10)
-    if not alerts_df.empty:
-        for _, alert in alerts_df.iterrows():
-            severity = alert.get('severity', 'LOW')
-            timestamp = str(alert.get('timestamp', ''))[:19]
-            alert_type = alert.get('alert_type', '')
-            description = alert.get('description', '')
-            
-            if severity == 'HIGH':
-                st.markdown(f'<div class="alert-high">⚠️ **{timestamp}** - {alert_type}<br>{description}</div>', unsafe_allow_html=True)
-            elif severity == 'MEDIUM':
-                st.markdown(f'<div class="alert-medium">⚡ **{timestamp}** - {alert_type}<br>{description}</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="alert-low">ℹ️ **{timestamp}** - {alert_type}<br>{description}</div>', unsafe_allow_html=True)
-    else:
-        st.info("No alerts")
+    alerts = pd.read_sql_query("SELECT timestamp, severity, alert_type, description FROM alerts ORDER BY timestamp DESC LIMIT 10", conn)
+    for _, alert in alerts.iterrows():
+        severity = alert['severity']
+        cls = "alert-high" if severity == "HIGH" else "alert-medium" if severity == "MEDIUM" else "alert-low"
+        st.markdown(f'<div class="{cls}"><strong>{alert["timestamp"][:19]}</strong> - {alert["alert_type"]}<br>{alert["description"][:100]}</div>', unsafe_allow_html=True)
 
 def show_alerts(conn):
     st.header("🚨 All Alerts")
-    
-    severity_filter = st.selectbox("Severity", ["All", "HIGH", "MEDIUM", "LOW"])
-    
+    severity = st.selectbox("Severity", ["All", "HIGH", "MEDIUM", "LOW"])
     query = "SELECT * FROM alerts"
-    if severity_filter != "All":
-        query += f" WHERE severity = '{severity_filter}'"
+    if severity != "All":
+        query += f" WHERE severity = '{severity}'"
     query += " ORDER BY timestamp DESC LIMIT 200"
-    
     df = pd.read_sql_query(query, conn)
     st.dataframe(df, use_container_width=True)
 
 def show_network(conn):
     st.header("🌐 Network Activity")
-    
-    tab1, tab2 = st.tabs(["DNS Queries", "Network Threats"])
-    
+    tab1, tab2 = st.tabs(["DNS Queries", "Threats"])
     with tab1:
-        dns_df = get_table_data(conn, "dns_queries", limit=200)
-        if not dns_df.empty:
-            st.dataframe(dns_df[['timestamp', 'query_name', 'client_ip', 'entropy']], use_container_width=True)
-        else:
-            st.info("No DNS data")
-    
+        df = pd.read_sql_query("SELECT timestamp, query_name, entropy FROM dns_queries ORDER BY timestamp DESC LIMIT 200", conn)
+        st.dataframe(df, use_container_width=True)
     with tab2:
-        threats_df = get_table_data(conn, "network_threats", limit=200)
-        if not threats_df.empty:
-            st.dataframe(threats_df[['timestamp', 'threat_type', 'severity', 'remote_ip', 'remote_port']], use_container_width=True)
-        else:
-            st.info("No threats detected")
-
-def show_processes(conn):
-    st.header("📊 Process Activity")
-    
-    events_df = get_table_data(conn, "process_events", limit=200)
-    if not events_df.empty:
-        st.dataframe(events_df[['timestamp', 'event_type', 'name', 'username']], use_container_width=True)
-    else:
-        st.info("No process events")
+        df = pd.read_sql_query("SELECT timestamp, threat_type, severity, remote_ip FROM network_threats ORDER BY timestamp DESC LIMIT 200", conn)
+        st.dataframe(df, use_container_width=True)
 
 def show_usb(conn):
     st.header("💾 USB Activity")
-    
-    tab1, tab2 = st.tabs(["USB Devices", "File Activity"])
-    
+    tab1, tab2 = st.tabs(["Devices", "Files"])
     with tab1:
-        devices_df = get_table_data(conn, "usb_devices", limit=200)
-        if not devices_df.empty:
-            st.dataframe(devices_df[['timestamp', 'event_type', 'drive_letter', 'volume_label']], use_container_width=True)
-        else:
-            st.info("No USB devices")
-    
+        df = pd.read_sql_query("SELECT timestamp, event_type, drive_letter FROM usb_devices ORDER BY timestamp DESC LIMIT 200", conn)
+        st.dataframe(df, use_container_width=True)
     with tab2:
-        files_df = get_table_data(conn, "usb_file_activity", limit=200)
-        if not files_df.empty:
-            st.dataframe(files_df[['timestamp', 'operation', 'file_path', 'risk_level']], use_container_width=True)
-        else:
-            st.info("No file activity")
+        df = pd.read_sql_query("SELECT timestamp, operation, file_path, risk_level FROM usb_file_activity ORDER BY timestamp DESC LIMIT 200", conn)
+        st.dataframe(df, use_container_width=True)
 
 if __name__ == "__main__":
     main()
