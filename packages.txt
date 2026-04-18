@@ -1,13 +1,5 @@
 # System dependencies for Pillow and other compiled packages
-libz-dev
 libjpeg-dev
-libfreetype6-dev
-liblcms2-dev
+zlib1g-dev
+libpng-dev
 libwebp-dev
-tcl8.6-dev
-tk8.6-dev
-python3-tk
-build-essential
-gcc
-g++
-python3-dev
