@@ -43,8 +43,8 @@ DEFAULT_MODEL = "openai/gpt-3.5-turbo"
 # ============================================
 # FIREBASE CONFIGURATION
 # ============================================
-FIREBASE_HOST = "neurofence2-default-rtdb.asia-southeast1.firebasedatabase.app"
-FIREBASE_AUTH = "AIzaSyCbT1wnRE9OO_yv2LjqSIyK1InddRgDFsY"
+FIREBASE_HOST = "neurofene2-default-rtdb.asia-southeast1.firebasedatabase.app/"
+FIREBASE_AUTH = "AIzaSyBMUcRq3-WbKXrRVUgVrj6iP9eKW7e4qnM"
 FIREBASE_BASE_URL = f"https://{FIREBASE_HOST}"
 
 FIREBASE_COLLECTIONS = {
