@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 NEUROFENCE2 ENTERPRISE PLATFORM - Streamlit Cloud Edition
-Complete Security Operations Center with AI Assistant, DLP, Threat Intelligence
-Data Source: Firebase Realtime Database
+Fixed Firebase data fetching for agent's nested structure
 """
 
 import streamlit as st
@@ -432,16 +431,56 @@ st.markdown("""
         from { opacity: 0; transform: translateX(-20px); }
         to { opacity: 1; transform: translateX(0); }
     }
+    
+    /* Device card */
+    .device-card {
+        background: linear-gradient(135deg, #1e2436 0%, #2a2f42 100%);
+        border-radius: 15px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border: 1px solid rgba(102, 126, 234, 0.2);
+        transition: all 0.3s ease;
+    }
+    
+    .device-card:hover {
+        transform: translateX(5px);
+        border-color: #667eea;
+    }
+    
+    .device-name {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #667eea;
+    }
+    
+    .device-stats {
+        font-size: 0.8rem;
+        color: #888;
+        margin-top: 0.3rem;
+    }
+    
+    .status-online {
+        color: #00ff00;
+        font-weight: 600;
+    }
+    
+    .status-offline {
+        color: #ff4444;
+        font-weight: 600;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================
-# FIREBASE DATA FETCHING FUNCTIONS
+# FIREBASE DATA FETCHING FUNCTIONS (FIXED)
 # ============================================
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_firebase_collection(collection_name, limit=5000):
-    """Fetch data from Firebase Realtime Database collection"""
+    """
+    Fetch data from Firebase Realtime Database collection
+    Handles the nested structure: device -> batch_id -> {records: [...]}
+    """
     try:
         url = f"{FIREBASE_BASE_URL}/{collection_name}.json?auth={FIREBASE_AUTH}"
         response = requests.get(url, timeout=30)
@@ -452,31 +491,52 @@ def fetch_firebase_collection(collection_name, limit=5000):
                 return pd.DataFrame()
             
             records = []
+            
+            # Handle nested structure: device_name -> batch_id -> records
             if isinstance(data, dict):
                 for device_name, device_data in data.items():
                     if isinstance(device_data, dict):
-                        for batch_id, batch_data in device_data.items():
-                            if isinstance(batch_data, dict) and 'records' in batch_data:
-                                for record in batch_data.get('records', []):
+                        for batch_id, batch_content in device_data.items():
+                            # Check if this batch has 'records' key (batch format)
+                            if isinstance(batch_content, dict) and 'records' in batch_content:
+                                batch_records = batch_content.get('records', [])
+                                if isinstance(batch_records, list):
+                                    for record in batch_records:
+                                        if isinstance(record, dict):
+                                            record['_device'] = device_name
+                                            record['_batch_id'] = batch_id
+                                            # Add batch metadata if available
+                                            if 'uploaded_at' in batch_content:
+                                                record['_batch_uploaded_at'] = batch_content['uploaded_at']
+                                            records.append(record)
+                            # Handle case where batch_content is directly a record (no 'records' key)
+                            elif isinstance(batch_content, dict) and 'records' not in batch_content:
+                                # Check if it has typical record fields
+                                if any(key in batch_content for key in ['timestamp', 'alert_type', 'ip_src', 'process_name']):
+                                    batch_content['_device'] = device_name
+                                    batch_content['_batch_id'] = batch_id
+                                    records.append(batch_content)
+                            # Handle case where batch_content is a list
+                            elif isinstance(batch_content, list):
+                                for idx, record in enumerate(batch_content):
                                     if isinstance(record, dict):
                                         record['_device'] = device_name
-                                        record['_batch_id'] = batch_id
+                                        record['_batch_index'] = idx
                                         records.append(record)
-                            elif isinstance(batch_data, dict) and 'records' not in batch_data:
-                                batch_data['_device'] = device_name
-                                batch_data['_batch_id'] = batch_id
-                                records.append(batch_data)
-            elif isinstance(data, list):
-                records = data
             
             df = pd.DataFrame(records)
             
-            # Convert timestamp columns
-            timestamp_cols = ['timestamp', '_uploaded_at', '_stored_at', 'first_seen', 'last_seen', 'created_time']
+            if df.empty:
+                return df
+            
+            # Convert timestamp columns to datetime
+            timestamp_cols = ['timestamp', '_uploaded_at', '_stored_at', '_batch_uploaded_at', 
+                            'first_seen', 'last_seen', 'created_time', 'created', 'modified', 'accessed']
             for col in timestamp_cols:
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors='coerce')
             
+            # Limit records
             if len(df) > limit:
                 df = df.head(limit)
             
@@ -491,10 +551,21 @@ def fetch_firebase_collection(collection_name, limit=5000):
 def fetch_all_collections():
     """Fetch data from all collections"""
     data = {}
+    status_messages = []
+    
     for name, path in FIREBASE_COLLECTIONS.items():
         df = fetch_firebase_collection(path)
         if not df.empty:
             data[name] = df
+            status_messages.append(f"✅ {name}: {len(df)} records")
+        else:
+            status_messages.append(f"⚠️ {name}: No data")
+    
+    # Show status in expander
+    with st.expander("📊 Data Fetch Status", expanded=False):
+        for msg in status_messages:
+            st.text(msg)
+    
     return data
 
 
@@ -578,10 +649,24 @@ class FirebaseDataManager:
         return [ip for ip in ips if ip and ip != '']
     
     def get_all_file_hashes(self, limit=100):
-        df = self.get_file_operations(minutes=1440, limit=2000)
-        if df.empty or 'file_hash' not in df.columns:
-            return []
-        hashes = df['file_hash'].dropna().unique()
+        # Check multiple sources for file hashes
+        hashes = set()
+        
+        # From file_operations
+        df_files = self.get_file_operations(minutes=1440, limit=2000)
+        if not df_files.empty and 'file_hash' in df_files.columns:
+            hashes.update(df_files['file_hash'].dropna().unique())
+        
+        # From usb_file_activity
+        df_usb = self.get_usb_file_activity(minutes=1440, limit=2000)
+        if not df_usb.empty and 'file_hash' in df_usb.columns:
+            hashes.update(df_usb['file_hash'].dropna().unique())
+        
+        # From file_system
+        df_fs = self.get_collection('file_system', minutes=1440, limit=2000)
+        if not df_fs.empty and 'hash_sha256' in df_fs.columns:
+            hashes.update(df_fs['hash_sha256'].dropna().unique())
+        
         return list(hashes)[:limit]
     
     def get_top_talkers(self, limit=10, minutes=60):
@@ -597,6 +682,21 @@ class FirebaseDataManager:
             result = result.merge(bytes_sum, on='ip_src', how='left')
         
         return result
+    
+    def get_devices(self):
+        """Get list of all devices that have sent data"""
+        devices = set()
+        for name, path in FIREBASE_COLLECTIONS.items():
+            try:
+                url = f"{FIREBASE_BASE_URL}/{path}.json?auth={FIREBASE_AUTH}&shallow=true"
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, dict):
+                        devices.update(data.keys())
+            except:
+                pass
+        return sorted(devices)
 
 # ============================================
 # THREAT DETECTION FUNCTIONS
@@ -765,8 +865,8 @@ def detect_registry_threats(registry_df):
     
     threats = []
     persistence_keys = [
-        (r'Software\Microsoft\Windows\CurrentVersion\Run', 'Run Key', 'T1547.001'),
-        (r'Software\Microsoft\Windows\CurrentVersion\RunOnce', 'RunOnce Key', 'T1547.001')
+        (r'Software\\Microsoft\\Windows\\CurrentVersion\\Run', 'Run Key', 'T1547.001'),
+        (r'Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce', 'RunOnce Key', 'T1547.001')
     ]
     
     for _, row in registry_df.iterrows():
@@ -1174,7 +1274,7 @@ def render_navigation():
 def render_main_dashboard(data_manager, minutes):
     """Main Dashboard with key metrics and alerts"""
     
-    with st.spinner("Loading security telemetry..."):
+    with st.spinner("Loading security telemetry from Firebase..."):
         network_df = data_manager.get_network_packets(minutes=minutes, limit=10000)
         alerts_df = data_manager.get_recent_alerts(limit=500)
         network_threats_df = data_manager.get_network_threats(minutes=minutes, limit=500)
@@ -1189,6 +1289,9 @@ def render_main_dashboard(data_manager, minutes):
         process_threats = detect_process_threats(processes_df)
         
         top_talkers = data_manager.get_top_talkers(limit=10, minutes=minutes)
+        
+        # Get devices
+        devices = data_manager.get_devices()
     
     # Metrics Row
     col1, col2, col3, col4 = st.columns(4)
@@ -1227,7 +1330,7 @@ def render_main_dashboard(data_manager, minutes):
         st.markdown(f"""
             <div class="metric-card-dark metric-low">
                 <div class="metric-label">ACTIVE DEVICES</div>
-                <div class="metric-value">{network_df['_device'].nunique() if not network_df.empty else 0}</div>
+                <div class="metric-value">{len(devices)}</div>
                 <div class="metric-trend">Telemetry Sources</div>
             </div>
         """, unsafe_allow_html=True)
@@ -1250,6 +1353,8 @@ def render_main_dashboard(data_manager, minutes):
             )
             fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', height=400)
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No network packet data available")
     
     with col2:
         if not perf_df.empty and 'cpu_percent' in perf_df.columns:
@@ -1262,34 +1367,56 @@ def render_main_dashboard(data_manager, minutes):
             fig.update_layout(title="System Performance", plot_bgcolor='rgba(0,0,0,0)', 
                             paper_bgcolor='rgba(0,0,0,0)', height=400)
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No performance data available")
     
     st.markdown("---")
     
     # Recent Critical Alerts
     if not alerts_df.empty:
-        st.markdown("### 🚨 Recent Critical Alerts")
-        critical = alerts_df[alerts_df['severity'].isin(['CRITICAL', 'HIGH'])].head(5)
+        st.markdown("### 🚨 Recent Security Alerts")
+        critical = alerts_df.head(5)
         
         for _, alert in critical.iterrows():
-            severity_class = "alert-critical" if alert.get('severity') == 'CRITICAL' else "alert-high"
+            severity = alert.get('severity', 'MEDIUM')
+            severity_class = "alert-critical" if severity == 'CRITICAL' else "alert-high" if severity == 'HIGH' else "alert-card-dark"
             st.markdown(f"""
                 <div class="alert-card-dark {severity_class}">
                     <div class="alert-time">{alert.get('timestamp', '')}</div>
                     <div class="alert-title">🚨 {alert.get('alert_type', 'Unknown Alert')}</div>
                     <div class="alert-description">{alert.get('description', 'No description')[:200]}</div>
                     <div class="alert-source">
-                        <span class="status-badge status-{alert.get('severity', 'medium').lower()}">{alert.get('severity', 'MEDIUM')}</span>
+                        <span class="status-badge status-{severity.lower()}">{severity}</span>
                         Source: {alert.get('source', 'Unknown')}
                     </div>
                 </div>
             """, unsafe_allow_html=True)
+    else:
+        st.info("No alerts found. Check if the agent is running and sending data to Firebase.")
+    
+    # Device Status Section
+    if devices:
+        st.markdown("---")
+        st.markdown("### 🖥️ Connected Devices")
+        
+        cols = st.columns(4)
+        for idx, device in enumerate(devices[:8]):
+            with cols[idx % 4]:
+                st.markdown(f"""
+                    <div class="device-card">
+                        <div class="device-name">🖥️ {device}</div>
+                        <div class="device-stats">
+                            <span class="status-online">● ONLINE</span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
 
 
 def render_network_threats(data_manager, minutes):
     """Network threats analysis page"""
     st.markdown("<h1 style='text-align: center;'>Network Threat Observatory</h1>", unsafe_allow_html=True)
     
-    with st.spinner("Analyzing network threats..."):
+    with st.spinner("Analyzing network threats from Firebase..."):
         network_df = data_manager.get_network_packets(minutes=minutes, limit=20000)
         dns_df = data_manager.get_dns_queries(minutes=minutes, limit=2000)
         http_df = data_manager.get_http_transactions(minutes=minutes, limit=2000)
@@ -1349,7 +1476,7 @@ def render_network_threats(data_manager, minutes):
             available = [c for c in display_cols if c in dns_df.columns]
             st.dataframe(dns_df[available].head(200), use_container_width=True)
         else:
-            st.info("No DNS data")
+            st.info("No DNS data available")
     
     with tab3:
         if not http_df.empty:
@@ -1357,7 +1484,7 @@ def render_network_threats(data_manager, minutes):
             available = [c for c in display_cols if c in http_df.columns]
             st.dataframe(http_df[available].head(200), use_container_width=True)
         else:
-            st.info("No HTTP data")
+            st.info("No HTTP data available")
     
     with tab4:
         if not network_df.empty:
@@ -1365,14 +1492,14 @@ def render_network_threats(data_manager, minutes):
             available = [c for c in display_cols if c in network_df.columns]
             st.dataframe(network_df[available].head(200), use_container_width=True)
         else:
-            st.info("No packet data")
+            st.info("No packet data available")
 
 
 def render_system_dlp(data_manager, minutes):
     """Data Loss Prevention page"""
     st.markdown("<h1 style='text-align: center;'>Data Loss Prevention Studio</h1>", unsafe_allow_html=True)
     
-    with st.spinner("Analyzing DLP threats..."):
+    with st.spinner("Analyzing DLP threats from Firebase..."):
         files_df = data_manager.get_file_operations(minutes=minutes, limit=2000)
         processes_df = data_manager.get_processes(limit=500)
         registry_df = data_manager.get_registry_keys(limit=500)
@@ -1429,20 +1556,28 @@ def render_system_dlp(data_manager, minutes):
         if not usb_devices_df.empty:
             st.markdown("### USB Devices")
             st.dataframe(usb_devices_df.head(100), use_container_width=True)
+        else:
+            st.info("No USB activity data available")
     
     with tab2:
         if not files_df.empty:
             st.dataframe(files_df.head(200), use_container_width=True)
+        else:
+            st.info("No file operation data available")
     
     with tab3:
         if not processes_df.empty:
             display_cols = ['name', 'pid', 'cpu_percent', 'memory_percent', 'username']
             available = [c for c in display_cols if c in processes_df.columns]
             st.dataframe(processes_df[available].head(200), use_container_width=True)
+        else:
+            st.info("No process data available")
     
     with tab4:
         if not registry_df.empty:
             st.dataframe(registry_df.head(200), use_container_width=True)
+        else:
+            st.info("No registry data available")
     
     with tab5:
         if not software_df.empty:
@@ -1450,13 +1585,15 @@ def render_system_dlp(data_manager, minutes):
         if not vulnerabilities.empty:
             st.markdown("### Vulnerabilities Detected")
             st.dataframe(vulnerabilities, use_container_width=True)
+        if software_df.empty and vulnerabilities.empty:
+            st.info("No software data available")
 
 
 def render_threat_intelligence(data_manager, minutes):
     """Threat Intelligence page"""
     st.markdown("<h1 style='text-align: center;'>Threat Intelligence Workbench</h1>", unsafe_allow_html=True)
     
-    with st.spinner("Loading threat intelligence..."):
+    with st.spinner("Loading threat intelligence from Firebase..."):
         all_ips = data_manager.get_all_ips(minutes=minutes)
         all_hashes = data_manager.get_all_file_hashes(limit=50)
         network_df = data_manager.get_network_packets(minutes=minutes, limit=5000)
@@ -1503,7 +1640,7 @@ def render_threat_intelligence(data_manager, minutes):
                     st.markdown("#### Recent Activity")
                     st.dataframe(ip_activity[['timestamp', 'ip_dst', 'frame_len']].head(20), use_container_width=True)
         else:
-            st.info("No external IPs found")
+            st.info("No external IPs found in the current data")
     
     with tab2:
         if all_hashes:
@@ -1529,7 +1666,7 @@ def render_threat_intelligence(data_manager, minutes):
                     st.markdown("#### File Operations")
                     st.dataframe(hash_files[['timestamp', 'operation', 'file_path']], use_container_width=True)
         else:
-            st.info("No file hashes available")
+            st.info("No file hashes available for analysis")
 
 
 def render_ai_detection(data_manager, minutes):
@@ -1539,7 +1676,7 @@ def render_ai_detection(data_manager, minutes):
     # Load AI model
     model, scaler, feature_names = load_ai_model()
     
-    with st.spinner("Running AI analysis..."):
+    with st.spinner("Running AI analysis on Firebase data..."):
         network_df = data_manager.get_network_packets(minutes=minutes, limit=100000)
         alerts_df = data_manager.get_recent_alerts(limit=200)
         
@@ -1697,6 +1834,13 @@ def main():
             hours = st.slider("⏱️ Time Range (hours)", 1, 168, st.session_state['hours_filter'], key="time_slider")
             st.session_state['hours_filter'] = hours
             st.session_state['minutes_filter'] = hours * 60
+    
+    # Refresh button
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("🔄 Refresh Data from Firebase", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
     
     # Render navigation
     selected_page = render_navigation()
