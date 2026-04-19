@@ -1,6 +1,0 @@
-# System dependencies for Pillow and other compiled packages
-libjpeg-dev
-zlib1g-dev
-libpng-dev
-libwebp-dev
-libxcb1
