@@ -2,6 +2,7 @@
 """
 System Monitor Dashboard - Streamlit Cloud Edition
 Reads monitoring data from Firebase Firestore
+Based on the working OT-IoT example pattern
 """
 
 import streamlit as st
@@ -27,7 +28,86 @@ st.set_page_config(
 )
 
 # ============================================
-# FIREBASE INITIALIZATION
+# CUSTOM CSS FOR HACKER STYLE (Like the OT-IoT example)
+# ============================================
+typewriter_css = """
+<style>
+[data-testid="stAppViewContainer"] {
+    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+}
+
+/* Typewriter Container */
+.typewriter {
+    color: #00ff88;
+    font-family: 'Courier New', monospace;
+    font-size: 32px;
+    width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    border-right: 3px solid #00ff88;
+    animation: typing 4s steps(30, end), blink 0.7s infinite;
+    margin: 0 auto;
+    text-align: center;
+    padding-top: 15px;
+}
+
+/* Typing animation */
+@keyframes typing {
+    from { width: 0 }
+    to { width: 100% }
+}
+
+/* Cursor blink */
+@keyframes blink {
+    from { border-color: transparent }
+    to { border-color: #00ff88; }
+}
+
+/* Metric cards */
+.metric-card {
+    background: rgba(0, 255, 136, 0.1);
+    border: 1px solid #00ff88;
+    border-radius: 10px;
+    padding: 15px;
+    text-align: center;
+}
+
+/* Alert styling */
+.stAlert {
+    border-left: 5px solid #00ff88;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #1a1a2e;
+}
+::-webkit-scrollbar-thumb {
+    background: #00ff88;
+    border-radius: 4px;
+}
+</style>
+"""
+
+st.markdown(typewriter_css, unsafe_allow_html=True)
+
+# Typewriter header
+st.markdown(
+    """
+    <div class="typewriter">
+        🔐 System Monitor & Threat Detection Console
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ============================================
+# FIREBASE INITIALIZATION (Like OT-IoT but for Firestore)
 # ============================================
 @st.cache_resource
 def init_firebase():
@@ -46,12 +126,12 @@ def init_firebase():
         cred = None
         for path in json_paths:
             if os.path.exists(path):
-                st.success(f"✅ Loading Firebase credentials from: {path}")
+                st.success(f"✅ Firebase connected using: {path}")
                 cred = credentials.Certificate(path)
                 break
         
         if cred is None and hasattr(st, 'secrets') and "firebase" in st.secrets:
-            st.success("✅ Loading Firebase credentials from Streamlit secrets")
+            st.success("✅ Firebase connected using Streamlit secrets")
             cred = credentials.Certificate(dict(st.secrets["firebase"]))
         
         if cred is None:
@@ -66,7 +146,7 @@ def init_firebase():
         db = firestore.client()
         
         # Test connection
-        st.success("✅ Firebase connected successfully!")
+        st.success("✅ Firebase Firestore connected successfully!")
         return db
         
     except Exception as e:
@@ -74,17 +154,20 @@ def init_firebase():
         return None
 
 # ============================================
-# DATA FETCHING FUNCTIONS
+# DATA FETCHING FUNCTIONS (Based on OT-IoT pattern)
 # ============================================
 @st.cache_data(ttl=30)
-def fetch_all_documents(collection_name, limit=2000):
-    """Fetch all documents from a collection without timestamp filtering"""
+def fetch_collection_data(collection_name, limit=2000):
+    """
+    Fetch data from Firestore collection
+    Similar to fetch_raw_data in OT-IoT example
+    """
     try:
         db = st.session_state.get('firestore_db')
         if db is None:
             return pd.DataFrame()
         
-        # Simple query without timestamp filter first
+        # Get documents
         docs = db.collection(collection_name).limit(limit).stream()
         
         data = []
@@ -95,35 +178,38 @@ def fetch_all_documents(collection_name, limit=2000):
         
         if data:
             df = pd.DataFrame(data)
-            # Convert timestamp if it exists
+            # Convert timestamp if exists
             if 'timestamp' in df.columns:
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
             return df
         return pd.DataFrame()
+        
     except Exception as e:
         st.warning(f"Error fetching {collection_name}: {str(e)[:100]}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=30)
 def fetch_collection_by_time(collection_name, hours=24, limit=2000):
-    """Fetch documents from last N hours"""
+    """
+    Fetch data for last N hours
+    """
     try:
         db = st.session_state.get('firestore_db')
         if db is None:
             return pd.DataFrame()
         
-        # Calculate cutoff time
+        # Calculate cutoff
         cutoff = datetime.now() - timedelta(hours=hours)
         cutoff_str = cutoff.isoformat()
         
-        # Try to query with timestamp filter
+        # Try to filter by timestamp
         try:
             docs = db.collection(collection_name)\
                 .where(filter=firestore.FieldFilter("timestamp", ">=", cutoff_str))\
                 .limit(limit)\
                 .stream()
         except:
-            # Fallback to get all if timestamp filter fails
+            # Fallback to get all
             docs = db.collection(collection_name).limit(limit).stream()
         
         data = []
@@ -136,24 +222,23 @@ def fetch_collection_by_time(collection_name, hours=24, limit=2000):
             df = pd.DataFrame(data)
             if 'timestamp' in df.columns:
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
-                # Filter by time in pandas if Firestore filter didn't work
-                if hours < 168:  # Only filter if not "all time"
+                # Filter in pandas if needed
+                if hours < 168:
                     df = df[df['timestamp'] >= cutoff]
             return df
         return pd.DataFrame()
+        
     except Exception as e:
-        st.warning(f"Error in time filter for {collection_name}: {str(e)[:100]}")
-        # Fallback to get all documents
-        return fetch_all_documents(collection_name, limit)
+        return fetch_collection_data(collection_name, limit)
 
 def get_collection_count(collection_name):
-    """Get count of documents in a collection"""
+    """Get total document count in collection"""
     try:
         db = st.session_state.get('firestore_db')
         if db is None:
             return 0
         
-        # Use aggregation query for count
+        # Use aggregation for count
         try:
             count_query = db.collection(collection_name).count()
             result = count_query.get()
@@ -169,27 +254,27 @@ def get_collection_count(collection_name):
 # DASHBOARD COMPONENTS
 # ============================================
 def render_header():
-    """Render dashboard header"""
+    """Render dashboard header with time range selector"""
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        st.title("🖥️ System Monitor Dashboard")
-        st.caption("Real-time system monitoring and threat detection")
+        st.markdown("### 📊 System Overview")
+        st.caption("Real-time monitoring and threat detection")
     
     with col2:
         hours = st.selectbox(
             "⏱️ Time Range",
-            [6, 12, 24, 48, 168, 720, 8760],
+            [1, 6, 12, 24, 48, 168, 720],
             format_func=lambda x: {
+                1: "Last hour", 
                 6: "Last 6 hours", 
                 12: "Last 12 hours", 
                 24: "Last 24 hours", 
                 48: "Last 2 days", 
-                168: "Last 7 days", 
-                720: "Last 30 days",
-                8760: "All time"
+                168: "Last 7 days",
+                720: "Last 30 days"
             }[x],
-            index=2
+            index=3
         )
     
     with col3:
@@ -200,224 +285,290 @@ def render_header():
     return hours
 
 def render_stats_cards(hours):
-    """Render statistics cards"""
-    st.subheader("📊 System Overview")
+    """Render statistics cards - similar to OT-IoT metrics"""
+    st.markdown("### 📈 Live Statistics")
     
-    with st.spinner("Loading statistics..."):
-        # Fetch data from collections
+    with st.spinner("Loading data..."):
+        # Fetch all collections
         alerts_df = fetch_collection_by_time('alerts', hours)
         packets_df = fetch_collection_by_time('network_packets', hours)
-        processes_df = fetch_all_documents('processes', 500)
         threats_df = fetch_collection_by_time('network_threats', hours)
         dns_df = fetch_collection_by_time('dns_queries', hours)
+        processes_df = fetch_collection_data('processes', 500)
         usb_df = fetch_collection_by_time('usb_devices', hours)
-        http_df = fetch_collection_by_time('http_transactions', hours)
     
+    # Create metrics row
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     with col1:
         alert_count = len(alerts_df)
-        st.metric("🚨 Alerts", alert_count, 
-                 delta="Total" if alert_count > 0 else None)
+        st.metric(
+            "🚨 Alerts", 
+            alert_count,
+            delta="Active" if alert_count > 0 else None,
+            help="Total security alerts"
+        )
     
     with col2:
         packet_count = len(packets_df)
-        st.metric("📦 Packets", f"{packet_count:,}" if packet_count > 0 else "0")
+        st.metric(
+            "📦 Packets", 
+            f"{packet_count:,}" if packet_count > 0 else "0",
+            help="Network packets captured"
+        )
     
     with col3:
-        proc_count = len(processes_df)
-        st.metric("🔄 Processes", proc_count)
+        threat_count = len(threats_df)
+        st.metric(
+            "⚠️ Threats", 
+            threat_count,
+            delta="Open" if threat_count > 0 else None,
+            help="Detected threats"
+        )
     
     with col4:
-        threat_count = len(threats_df)
-        st.metric("⚠️ Threats", threat_count)
+        dns_count = len(dns_df)
+        st.metric(
+            "🌐 DNS", 
+            f"{dns_count:,}" if dns_count > 0 else "0",
+            help="DNS queries"
+        )
     
     with col5:
-        dns_count = len(dns_df)
-        st.metric("🌐 DNS", f"{dns_count:,}" if dns_count > 0 else "0")
+        proc_count = len(processes_df)
+        st.metric(
+            "🔄 Processes", 
+            proc_count,
+            help="Running processes"
+        )
     
     with col6:
         usb_count = len(usb_df)
-        st.metric("💾 USB", usb_count)
+        st.metric(
+            "💾 USB", 
+            usb_count,
+            help="USB devices"
+        )
     
-    # Show if data is loading properly
+    # Show debug info if no data
     if alert_count == 0 and hours < 168:
-        st.info(f"💡 No alerts found in the last {hours} hours. Try selecting 'All time' or check if data exists in Firebase.")
-        with st.expander("Debug: Check available data"):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("Available collections with data:")
-                collections = ['alerts', 'network_packets', 'network_threats', 'dns_queries', 'usb_devices']
-                for coll in collections:
-                    count = get_collection_count(coll)
-                    if count > 0:
-                        st.success(f"✅ {coll}: {count} documents")
-                    else:
-                        st.warning(f"⚠️ {coll}: No documents found")
+        with st.expander("ℹ️ No data? Click to check database status"):
+            st.info("Checking Firebase collections...")
+            collections_to_check = ['alerts', 'network_packets', 'network_threats', 'dns_queries']
+            for coll in collections_to_check:
+                count = get_collection_count(coll)
+                if count > 0:
+                    st.success(f"✅ {coll}: {count} documents found")
+                else:
+                    st.warning(f"⚠️ {coll}: No documents found")
             
-            with col2:
-                st.write("Sample alert document:")
-                sample = fetch_all_documents('alerts', 5)
-                if not sample.empty:
-                    st.dataframe(sample.head(2))
+            st.markdown("**💡 Tips:**")
+            st.markdown("- Try selecting 'Last 30 days' or 'All time'")
+            st.markdown("- Check if your monitor agent is running and sending data")
+            st.markdown("- Verify Firebase credentials have read access")
 
-def render_network_analysis(hours):
-    """Render network monitoring section"""
-    st.subheader("🌐 Network Analysis")
+def render_alerts_section(hours):
+    """Render alerts and threats section - similar to OT-IoT anomaly display"""
+    st.markdown("### 🚨 Security Alerts & Threats")
     
-    tab1, tab2, tab3 = st.tabs(["📡 Network Packets", "🌍 DNS Queries", "🌐 HTTP Traffic"])
+    with st.spinner("Loading alerts..."):
+        alerts_df = fetch_collection_by_time('alerts', hours, limit=500)
+        threats_df = fetch_collection_by_time('network_threats', hours, limit=500)
+    
+    tab1, tab2 = st.tabs(["📋 Recent Alerts", "⚠️ Active Threats"])
     
     with tab1:
-        with st.spinner("Loading network data..."):
-            packets_df = fetch_collection_by_time('network_packets', hours, limit=1000)
-        
-        if not packets_df.empty:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if 'packet_type' in packets_df.columns:
-                    packet_types = packets_df['packet_type'].value_counts().head(10)
-                    if not packet_types.empty:
-                        fig = px.pie(values=packet_types.values, names=packet_types.index, title="Packet Types")
-                        st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                if 'ip_src' in packets_df.columns:
-                    top_src = packets_df['ip_src'].value_counts().head(10)
-                    if not top_src.empty:
-                        fig = px.bar(x=top_src.values, y=top_src.index, orientation='h', title="Top Source IPs")
-                        st.plotly_chart(fig, use_container_width=True)
-            
-            # Packet timeline
-            if len(packets_df) > 1:
-                packets_over_time = packets_df.set_index('timestamp').resample('1min').size()
-                if not packets_over_time.empty:
-                    fig = px.line(x=packets_over_time.index, y=packets_over_time.values, title="Packet Rate (per minute)")
-                    st.plotly_chart(fig, use_container_width=True)
-            
-            with st.expander("Recent Network Packets"):
-                display_cols = ['timestamp', 'packet_type', 'ip_src', 'ip_dst']
-                available_cols = [col for col in display_cols if col in packets_df.columns]
-                st.dataframe(packets_df[available_cols].head(20), use_container_width=True)
-        else:
-            st.info("📭 No network packet data available for this time range")
-    
-    with tab2:
-        with st.spinner("Loading DNS data..."):
-            dns_df = fetch_collection_by_time('dns_queries', hours, limit=1000)
-        
-        if not dns_df.empty:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                top_dns = dns_df['query_name'].value_counts().head(10)
-                if not top_dns.empty:
-                    fig = px.bar(x=top_dns.values, y=top_dns.index, orientation='h', title="Top DNS Queries")
-                    st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                if len(dns_df) > 1:
-                    dns_over_time = dns_df.set_index('timestamp').resample('5min').size()
-                    if not dns_over_time.empty:
-                        fig = px.line(x=dns_over_time.index, y=dns_over_time.values, title="DNS Query Rate")
-                        st.plotly_chart(fig, use_container_width=True)
-            
-            # Suspicious DNS (high entropy)
-            if 'entropy' in dns_df.columns:
-                suspicious = dns_df[dns_df['entropy'] > 4.0].nlargest(10, 'entropy')
-                if not suspicious.empty:
-                    st.warning("⚠️ High Entropy DNS Queries (Potential Tunneling)")
-                    st.dataframe(suspicious[['timestamp', 'query_name', 'entropy']], use_container_width=True)
-        else:
-            st.info("📭 No DNS query data available")
-    
-    with tab3:
-        with st.spinner("Loading HTTP data..."):
-            http_df = fetch_collection_by_time('http_transactions', hours, limit=500)
-        
-        if not http_df.empty:
-            # Top HTTP hosts
-            top_hosts = http_df['host'].value_counts().head(10)
-            if not top_hosts.empty:
-                fig = px.bar(x=top_hosts.values, y=top_hosts.index, orientation='h', title="Top HTTP Hosts")
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with st.expander("Recent HTTP Transactions"):
-                st.dataframe(http_df[['timestamp', 'method', 'host', 'uri']].head(20), use_container_width=True)
-        else:
-            st.info("📭 No HTTP transaction data available")
-
-def render_threats_alerts(hours):
-    """Render threats and alerts section"""
-    st.subheader("⚠️ Security Threats & Alerts")
-    
-    tab1, tab2 = st.tabs(["🚨 Active Threats", "📋 Alert History"])
-    
-    with tab1:
-        with st.spinner("Loading threats..."):
-            threats_df = fetch_collection_by_time('network_threats', hours, limit=500)
-        
-        if not threats_df.empty:
-            open_threats = threats_df[threats_df.get('status', 'OPEN') == 'OPEN'] if 'status' in threats_df.columns else threats_df
-            
-            if not open_threats.empty:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    threat_types = open_threats['threat_type'].value_counts()
-                    if not threat_types.empty:
-                        fig = px.bar(x=threat_types.values, y=threat_types.index, orientation='h', title="Threat Types")
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                with col2:
-                    if 'severity' in open_threats.columns:
-                        severity_dist = open_threats['severity'].value_counts()
-                        if not severity_dist.empty:
-                            colors = {'HIGH': 'red', 'MEDIUM': 'orange', 'LOW': 'green'}
-                            fig = px.pie(values=severity_dist.values, names=severity_dist.index, title="Threat Severity")
-                            st.plotly_chart(fig, use_container_width=True)
-                
-                # Display threats table
-                display_cols = ['timestamp', 'threat_type', 'severity', 'process_name', 'remote_ip', 'remote_port']
-                available_cols = [col for col in display_cols if col in open_threats.columns]
-                st.dataframe(open_threats[available_cols], use_container_width=True)
-            else:
-                st.success("✅ No open threats detected")
-        else:
-            st.info("📭 No threat data available")
-    
-    with tab2:
-        with st.spinner("Loading alerts..."):
-            alerts_df = fetch_collection_by_time('alerts', hours, limit=1000)
-        
         if not alerts_df.empty:
-            # Alert timeline
-            if len(alerts_df) > 1:
-                alerts_over_time = alerts_df.set_index('timestamp').resample('1h').size()
-                if not alerts_over_time.empty:
-                    fig = px.line(x=alerts_over_time.index, y=alerts_over_time.values, title="Alert Timeline")
-                    st.plotly_chart(fig, use_container_width=True)
+            # Alert timeline chart
+            alerts_over_time = alerts_df.set_index('timestamp').resample('1h').size()
+            if len(alerts_over_time) > 1:
+                fig = px.line(
+                    x=alerts_over_time.index, 
+                    y=alerts_over_time.values, 
+                    title="Alert Timeline",
+                    labels={'x': 'Time', 'y': 'Alert Count'}
+                )
+                fig.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#00ff88'
+                )
+                st.plotly_chart(fig, use_container_width=True)
             
             # Alert types distribution
             alert_types = alerts_df['alert_type'].value_counts().head(10)
             if not alert_types.empty:
-                fig = px.bar(x=alert_types.values, y=alert_types.index, orientation='h', title="Top Alert Types")
+                fig = px.bar(
+                    x=alert_types.values, 
+                    y=alert_types.index, 
+                    orientation='h',
+                    title="Alert Types Distribution",
+                    labels={'x': 'Count', 'y': 'Alert Type'}
+                )
+                fig.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#00ff88'
+                )
                 st.plotly_chart(fig, use_container_width=True)
             
-            # Recent alerts
-            with st.expander("Recent Alerts", expanded=True):
-                display_cols = ['timestamp', 'alert_type', 'severity', 'description']
-                available_cols = [col for col in display_cols if col in alerts_df.columns]
-                if available_cols:
-                    st.dataframe(alerts_df[available_cols].head(50), use_container_width=True)
-                else:
-                    st.dataframe(alerts_df.head(50), use_container_width=True)
+            # Alert table
+            st.markdown("#### Recent Alerts")
+            display_cols = ['timestamp', 'alert_type', 'severity', 'description']
+            available_cols = [col for col in display_cols if col in alerts_df.columns]
+            if available_cols:
+                st.dataframe(
+                    alerts_df[available_cols].head(50),
+                    use_container_width=True,
+                    hide_index=True
+                )
         else:
-            st.info("📭 No alert data available")
+            st.info("📭 No alerts found in selected time range")
+    
+    with tab2:
+        if not threats_df.empty:
+            open_threats = threats_df[threats_df.get('status', 'OPEN') == 'OPEN'] if 'status' in threats_df.columns else threats_df
+            
+            if not open_threats.empty:
+                # Threat severity distribution
+                if 'severity' in open_threats.columns:
+                    severity_colors = {'HIGH': 'red', 'MEDIUM': 'orange', 'LOW': 'yellow'}
+                    severity_counts = open_threats['severity'].value_counts()
+                    fig = px.pie(
+                        values=severity_counts.values,
+                        names=severity_counts.index,
+                        title="Threat Severity Distribution",
+                        color=severity_counts.index,
+                        color_discrete_map=severity_colors
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Threats table
+                st.markdown("#### Active Threats")
+                display_cols = ['timestamp', 'threat_type', 'severity', 'process_name', 'remote_ip']
+                available_cols = [col for col in display_cols if col in open_threats.columns]
+                if available_cols:
+                    st.dataframe(
+                        open_threats[available_cols].head(50),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+            else:
+                st.success("✅ No open threats detected")
+        else:
+            st.info("📭 No threat data found")
 
-def render_performance(hours):
+def render_network_section(hours):
+    """Render network analysis section"""
+    st.markdown("### 🌐 Network Traffic Analysis")
+    
+    with st.spinner("Loading network data..."):
+        packets_df = fetch_collection_by_time('network_packets', hours, limit=1000)
+        dns_df = fetch_collection_by_time('dns_queries', hours, limit=500)
+    
+    if not packets_df.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Packet type distribution
+            if 'packet_type' in packets_df.columns:
+                packet_types = packets_df['packet_type'].value_counts()
+                if not packet_types.empty:
+                    fig = px.pie(
+                        values=packet_types.values,
+                        names=packet_types.index,
+                        title="Packet Type Distribution"
+                    )
+                    fig.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        font_color='#00ff88'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            # Top source IPs
+            if 'ip_src' in packets_df.columns:
+                top_src = packets_df['ip_src'].value_counts().head(10)
+                if not top_src.empty:
+                    fig = px.bar(
+                        x=top_src.values,
+                        y=top_src.index,
+                        orientation='h',
+                        title="Top Source IPs",
+                        labels={'x': 'Packet Count', 'y': 'IP Address'}
+                    )
+                    fig.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        font_color='#00ff88'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+        
+        # Packet timeline
+        if len(packets_df) > 1:
+            packets_over_time = packets_df.set_index('timestamp').resample('5min').size()
+            if len(packets_over_time) > 1:
+                fig = px.line(
+                    x=packets_over_time.index,
+                    y=packets_over_time.values,
+                    title="Network Traffic Over Time",
+                    labels={'x': 'Time', 'y': 'Packets per 5min'}
+                )
+                fig.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#00ff88'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        
+        # Recent packets
+        with st.expander("📡 Recent Network Packets"):
+            display_cols = ['timestamp', 'packet_type', 'ip_src', 'ip_dst']
+            available_cols = [col for col in display_cols if col in packets_df.columns]
+            if available_cols:
+                st.dataframe(packets_df[available_cols].head(30), use_container_width=True, hide_index=True)
+    else:
+        st.info("📭 No network packet data available")
+    
+    # DNS Section
+    if not dns_df.empty:
+        st.markdown("#### DNS Queries")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            top_dns = dns_df['query_name'].value_counts().head(10)
+            if not top_dns.empty:
+                fig = px.bar(
+                    x=top_dns.values,
+                    y=top_dns.index,
+                    orientation='h',
+                    title="Top DNS Queries",
+                    labels={'x': 'Query Count', 'y': 'Domain'}
+                )
+                fig.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#00ff88'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            if 'entropy' in dns_df.columns:
+                suspicious = dns_df[dns_df['entropy'] > 4.0]
+                if not suspicious.empty:
+                    st.warning(f"⚠️ {len(suspicious)} high-entropy DNS queries detected (potential tunneling)")
+        
+        with st.expander("🌍 Recent DNS Queries"):
+            display_cols = ['timestamp', 'query_name', 'entropy']
+            available_cols = [col for col in display_cols if col in dns_df.columns]
+            if available_cols:
+                st.dataframe(dns_df[available_cols].head(30), use_container_width=True, hide_index=True)
+
+def render_performance_section(hours):
     """Render performance metrics section"""
-    st.subheader("📈 System Performance")
+    st.markdown("### 📈 System Performance")
     
     with st.spinner("Loading performance data..."):
         perf_df = fetch_collection_by_time('performance', hours, limit=500)
@@ -427,127 +578,105 @@ def render_performance(hours):
         
         with col1:
             if 'cpu_percent' in perf_df.columns:
-                fig = px.line(perf_df, x='timestamp', y='cpu_percent', title="CPU Usage %")
+                fig = px.line(
+                    perf_df,
+                    x='timestamp',
+                    y='cpu_percent',
+                    title="CPU Usage %",
+                    labels={'timestamp': 'Time', 'cpu_percent': 'CPU %'}
+                )
+                fig.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#00ff88'
+                )
                 st.plotly_chart(fig, use_container_width=True)
         
         with col2:
             if 'memory_percent' in perf_df.columns:
-                fig = px.line(perf_df, x='timestamp', y='memory_percent', title="Memory Usage %")
+                fig = px.line(
+                    perf_df,
+                    x='timestamp',
+                    y='memory_percent',
+                    title="Memory Usage %",
+                    labels={'timestamp': 'Time', 'memory_percent': 'Memory %'}
+                )
+                fig.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#00ff88'
+                )
                 st.plotly_chart(fig, use_container_width=True)
         
         # Current metrics
-        st.subheader("Current Metrics")
         latest = perf_df.iloc[-1] if not perf_df.empty else None
-        
         if latest is not None:
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("CPU Usage", f"{latest.get('cpu_percent', 0):.1f}%")
+                st.metric("Current CPU", f"{latest.get('cpu_percent', 0):.1f}%")
             with col2:
-                st.metric("Memory Usage", f"{latest.get('memory_percent', 0):.1f}%")
+                st.metric("Current Memory", f"{latest.get('memory_percent', 0):.1f}%")
             with col3:
                 st.metric("Processes", f"{latest.get('processes_count', 0):,}")
             with col4:
                 uptime = latest.get('uptime', 0)
-                st.metric("Uptime", f"{uptime:.1f} hours" if uptime < 24 else f"{uptime/24:.1f} days")
+                st.metric("Uptime", f"{uptime:.1f}h" if uptime < 24 else f"{uptime/24:.1f}d")
     else:
         st.info("📭 No performance data available")
 
-def render_usb_monitoring(hours):
-    """Render USB monitoring section"""
-    st.subheader("💾 USB Device Monitoring")
-    
-    with st.spinner("Loading USB data..."):
-        usb_devices_df = fetch_collection_by_time('usb_devices', hours, limit=500)
-        usb_files_df = fetch_collection_by_time('usb_file_activity', hours, limit=500)
-    
-    if not usb_devices_df.empty or not usb_files_df.empty:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if not usb_devices_df.empty and 'event_type' in usb_devices_df.columns:
-                device_events = usb_devices_df['event_type'].value_counts()
-                if not device_events.empty:
-                    fig = px.pie(values=device_events.values, names=device_events.index, title="USB Device Events")
-                    st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            if not usb_files_df.empty and 'risk_level' in usb_files_df.columns:
-                risk_levels = usb_files_df['risk_level'].value_counts()
-                if not risk_levels.empty:
-                    fig = px.bar(x=risk_levels.values, y=risk_levels.index, orientation='h', title="File Risk Levels")
-                    st.plotly_chart(fig, use_container_width=True)
-        
-        if not usb_devices_df.empty:
-            with st.expander("Recent USB Devices"):
-                display_cols = ['timestamp', 'event_type', 'drive_letter', 'volume_label']
-                available_cols = [col for col in display_cols if col in usb_devices_df.columns]
-                st.dataframe(usb_devices_df[available_cols].head(20), use_container_width=True)
-        
-        if not usb_files_df.empty:
-            with st.expander("Recent USB File Activity"):
-                display_cols = ['timestamp', 'operation', 'file_path', 'risk_level']
-                available_cols = [col for col in display_cols if col in usb_files_df.columns]
-                if available_cols:
-                    st.dataframe(usb_files_df[available_cols].head(30), use_container_width=True)
-                else:
-                    st.dataframe(usb_files_df.head(30), use_container_width=True)
-    else:
-        st.info("📭 No USB monitoring data available")
-
 def render_sidebar():
-    """Render sidebar"""
+    """Render sidebar with system info - similar to OT-IoT sidebar"""
     with st.sidebar:
-        st.image("https://img.icons8.com/color/96/000000/security-checked--v1.png", width=80)
-        st.markdown("## System Monitor")
+        st.markdown("### 🔐 System Monitor")
         st.markdown("---")
         
         db = st.session_state.get('firestore_db')
         if db:
             st.success("✅ Firebase Connected")
-            
-            # Show total counts
-            st.markdown("### 📊 Database Stats")
-            collections = {
-                "Alerts": "alerts",
-                "Network Packets": "network_packets",
-                "Processes": "processes",
-                "Threats": "network_threats",
-                "DNS Queries": "dns_queries",
-                "USB Devices": "usb_devices",
-                "HTTP": "http_transactions"
-            }
-            
-            for name, coll in collections.items():
-                count = get_collection_count(coll)
-                if count > 0:
-                    st.caption(f"📁 {name}: {count:,}")
         else:
             st.error("❌ Firebase Disconnected")
         
         st.markdown("---")
-        st.markdown("### ℹ️ About")
-        st.caption("Monitors network traffic, processes, files, USB devices, and security threats")
+        st.markdown("### 📊 Database Status")
         
-        # Show last update time
+        # Show collection counts
+        collections = {
+            "Alerts": "alerts",
+            "Network Packets": "network_packets",
+            "Threats": "network_threats",
+            "DNS Queries": "dns_queries",
+            "Processes": "processes",
+            "USB Devices": "usb_devices"
+        }
+        
+        for name, coll in collections.items():
+            count = get_collection_count(coll)
+            if count > 0:
+                st.caption(f"📁 {name}: {count:,}")
+            else:
+                st.caption(f"📁 {name}: 0")
+        
+        st.markdown("---")
+        st.markdown("### ℹ️ System Info")
+        st.caption("Monitoring network traffic, processes, USB devices, and security threats")
         st.caption(f"**Last Updated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Data source info
-        with st.expander("📖 Data Sources"):
-            st.markdown("""
-            - **Alerts**: Security alerts from all monitors
-            - **Network Packets**: Captured network traffic
-            - **DNS Queries**: DNS lookup requests
-            - **Threats**: Detected security threats
-            - **USB Devices**: Connected USB devices
-            - **Performance**: System performance metrics
-            """)
+        st.markdown("---")
+        st.markdown("### 🛡️ Features")
+        st.markdown("""
+        - Real-time threat detection
+        - Network traffic analysis
+        - Process monitoring
+        - USB device tracking
+        - DNS query inspection
+        - Performance metrics
+        """)
 
 # ============================================
-# MAIN FUNCTION
+# MAIN FUNCTION (Like OT-IoT main)
 # ============================================
 def main():
-    # Initialize Firebase and store in session state
+    # Initialize Firebase
     if 'firestore_db' not in st.session_state:
         db = init_firebase()
         st.session_state['firestore_db'] = db
@@ -555,7 +684,7 @@ def main():
     db = st.session_state['firestore_db']
     
     if db is None:
-        st.error("Failed to connect to Firebase. Please check your credentials.")
+        st.error("Failed to connect to Firebase. Please check credentials.")
         st.stop()
     
     # Render sidebar
@@ -566,14 +695,16 @@ def main():
     
     # Dashboard sections
     render_stats_cards(hours)
-    render_network_analysis(hours)
-    render_threats_alerts(hours)
-    render_performance(hours)
-    render_usb_monitoring(hours)
+    st.markdown("---")
+    render_alerts_section(hours)
+    st.markdown("---")
+    render_network_section(hours)
+    st.markdown("---")
+    render_performance_section(hours)
     
     # Footer
     st.markdown("---")
-    st.caption(f"System Monitor Dashboard | Data from Firebase Firestore | Time range: {hours} hours")
+    st.caption(f"🖥️ System Monitor Dashboard | Data from Firebase Firestore | Time range: Last {hours} hours")
 
 if __name__ == "__main__":
     main()
